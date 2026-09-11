@@ -2106,9 +2106,8 @@ const (
 
 // Run is one sync run's row, open for checkpointing.
 type Run struct {
-	db    *sql.DB
-	id    int64
-	count int
+	db *sql.DB
+	id int64
 }
 
 func (r *Run) ID() int64 { return r.id }
@@ -2134,18 +2133,17 @@ func (d *Database) StartRun(organization string, started time.Time, dryRun bool)
 // never finished, which is what an interrupted process leaves behind.
 func (d *Database) ResumableRun(organization string) (*Run, bool, error) {
 	var id int64
-	var count int
 	err := d.db.QueryRow(
-		`SELECT id, repository_count FROM sync_runs WHERE organization = ? AND status = ? AND dry_run = 0 ORDER BY id DESC LIMIT 1`,
+		`SELECT id FROM sync_runs WHERE organization = ? AND status = ? AND dry_run = 0 ORDER BY id DESC LIMIT 1`,
 		organization, string(StatusRunning),
-	).Scan(&id, &count)
+	).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
 	}
 	if err != nil {
 		return nil, false, fmt.Errorf("find resumable run: %w", err)
 	}
-	return &Run{db: d.db, id: id, count: count}, true, nil
+	return &Run{db: d.db, id: id}, true, nil
 }
 
 // resumableOutcomes are the outcomes that mean a repository does not need to be
@@ -2204,7 +2202,6 @@ func (r *Run) RecordRepository(result mirror.Result, at time.Time) error {
 	if err != nil {
 		return fmt.Errorf("record repository %s: %w", result.Repository.NameWithOwner, err)
 	}
-	r.count++
 	return nil
 }
 
@@ -2605,13 +2602,24 @@ func TestRenderLimitsListsCoreFirstWithACountdown(t *testing.T) {
 	}
 }
 
-func TestRenderLimitsShowsNoNegativeCountdownForAPastReset(t *testing.T) {
+func TestRenderLimitsShowsAPastResetAsAvailableNow(t *testing.T) {
 	var out bytes.Buffer
 	if err := renderLimits(&out, sampleLimits(), time.Unix(1700009999, 0)); err != nil {
 		t.Fatalf("render: %v", err)
 	}
-	if strings.Contains(out.String(), "-") {
-		t.Fatalf("a past reset must not render a negative countdown:\n%s", out.String())
+
+	// The timestamp column contains hyphens, so assert on the countdown column
+	// itself: every row whose reset is in the past must read "now".
+	rows := strings.Split(strings.TrimSpace(out.String()), "
+")[1:]
+	if len(rows) != 2 {
+		t.Fatalf("rows = %d, want 2:
+%s", len(rows), out.String())
+	}
+	for _, row := range rows {
+		if !strings.HasSuffix(strings.TrimSpace(row), "now") {
+			t.Fatalf("row %q must show a past reset as now", row)
+		}
 	}
 }
 
@@ -3113,13 +3121,13 @@ func TestModelRendersAWaitingLine(t *testing.T) {
 		Message: "GitHub rate limit reached, waiting for the reset",
 		Until:   time.Unix(1700003600, 0).UTC(),
 	})
-	view := updated.(Model).View()
+	view := updated.(Model).View().Content
 
-	if !strings.Contains(view.String(), "Waiting:") {
-		t.Fatalf("waiting line missing from view:\n%s", view.String())
+	if !strings.Contains(view, "Waiting:") {
+		t.Fatalf("waiting line missing from view:\n%s", view)
 	}
-	if !strings.Contains(view.String(), "rate limit") {
-		t.Fatalf("waiting reason missing from view:\n%s", view.String())
+	if !strings.Contains(view, "rate limit") {
+		t.Fatalf("waiting reason missing from view:\n%s", view)
 	}
 }
 
@@ -3135,7 +3143,7 @@ func TestModelClearsTheWaitingLineWhenWorkResumes(t *testing.T) {
 		Total:      10,
 	})
 
-	if strings.Contains(resumed.(Model).View().String(), "Waiting:") {
+	if strings.Contains(resumed.(Model).View().Content, "Waiting:") {
 		t.Fatal("the waiting line must clear once work resumes")
 	}
 }
