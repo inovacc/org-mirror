@@ -1,0 +1,70 @@
+# Binaries
+/org-mirror
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Go workspace
+go.work
+go.work.sum
+
+# Environment
+.env
+
+# IDE - JetBrains
+.idea/**/workspace.xml
+.idea/**/tasks.xml
+.idea/**/usage.statistics.xml
+.idea/**/dictionaries
+.idea/**/shelf
+.idea/**/aws.xml
+.idea/**/contentModel.xml
+.idea/**/dataSources/
+.idea/**/dataSources.ids
+.idea/**/dataSources.local.xml
+.idea/**/sqlDataSources.xml
+.idea/**/dynamic.xml
+.idea/**/uiDesigner.xml
+.idea/**/dbnavigator.xml
+.idea/**/gradle.xml
+.idea/**/libraries
+.idea/**/mongoSettings.xml
+.idea/**/replstate.xml
+.idea/**/sonarlint/
+.idea/**/httpRequests
+.idea/**/caches/build_file_checksums.ser
+.idea_modules/
+*.iws
+out/
+
+# IDE - VSCode
+.vscode/
+
+# IDE - other
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+dist/
+bin/
+cmake-build-*/
+
+# Runtime mirror data
+orgs/
+
+# Generated files
+cmd/version.go
+.go-version
+/pkg/pb/
+
+# Coverage
+coverage.out
+coverage.html
