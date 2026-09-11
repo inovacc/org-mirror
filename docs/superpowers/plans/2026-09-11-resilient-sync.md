@@ -3470,8 +3470,7 @@ func (w *waitReporter) notify(wait ratelimit.Wait) {
 	w.mu.Unlock()
 
 	if report == nil {
-		fmt.Fprintf(w.fallback, "waiting %s: %s
-", wait.Duration.Round(time.Second), wait.Reason)
+		fmt.Fprintf(w.fallback, "waiting %s: %s\n", wait.Duration.Round(time.Second), wait.Reason)
 		return
 	}
 	report(mirror.ProgressEvent{
