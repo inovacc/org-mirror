@@ -26,9 +26,11 @@ Per request the transport:
    `x-ratelimit-reset` from the response and stores them in a snapshot.
 4. Sleeps until the reset instant when remaining falls to or below a reserve of 5, then
    retries.
-5. On `403` or `429`, honours `retry-after` when present; otherwise sleeps until
-   `x-ratelimit-reset`; otherwise backs off exponentially. A `403` without any rate-limit
-   signal is a permission error and is returned unchanged.
+5. On `429`, and on `403` carrying either `retry-after` or `x-ratelimit-remaining: 0`,
+   honours `retry-after` when present, otherwise sleeps until `x-ratelimit-reset`,
+   otherwise backs off exponentially. A `403` carrying neither header is a permission
+   error and is returned unchanged. Response bodies are never inspected, so the body a
+   caller receives is untouched.
 6. On `5xx` and on transport errors, backs off exponentially.
 
 Retries are capped at 5 attempts with a backoff of 1s doubling to a 60s ceiling, plus
@@ -45,12 +47,16 @@ Clone and fetch do not consume the REST budget but still reach GitHub, and are t
 share of the traffic. The same `Pacer` gates each repository before `Service.Sync` runs
 any git command. Its interval is `--delay`, defaulting to 750ms.
 
-The pacer gates **every** repository transition regardless of what the previous one did.
-A clone, a fast-forward, a conflict, an error and a resume skip all pace identically. The
-error path in particular must not shortcut the wait, because a failing organization is
+The pacer gates **every** repository that runs a git command, regardless of what the
+previous one did. A clone, a fast-forward, a conflict and an error all pace identically.
+The error path in particular must not shortcut the wait, because a failing organization is
 exactly where the loop would otherwise spin fastest. The wait is applied between
 repositories, so the first repository does not pay it and a run of one repository has no
 added latency.
+
+A repository skipped by resume is the one exception: it spawns no process and issues no
+request, so it does not pace. Pacing skips would make resuming a large organization spend
+minutes doing nothing.
 
 Two reasons the wait exists, and the second sets the default. GitHub's secondary rate
 limits react to request bursts. Endpoint-protection software on the local machine reacts
