@@ -50,16 +50,17 @@ func TestRateLimitsParsesEveryResource(t *testing.T) {
 
 func TestRateLimitsOrdersCoreFirstThenTheRestAlphabetically(t *testing.T) {
 	limits := RateLimits{Resources: map[string]RateLimit{
-		"search":  {Limit: 30},
-		"core":    {Limit: 5000},
-		"graphql": {Limit: 5000},
+		"search":      {Limit: 30},
+		"core":        {Limit: 5000},
+		"graphql":     {Limit: 5000},
+		"code_search": {Limit: 10},
 	}}
 
 	var names []string
 	for _, resource := range limits.Ordered() {
 		names = append(names, resource.Name)
 	}
-	want := []string{"core", "graphql", "search"}
+	want := []string{"core", "code_search", "graphql", "search"}
 	if len(names) != len(want) {
 		t.Fatalf("names = %v, want %v", names, want)
 	}
@@ -123,7 +124,24 @@ func TestRateLimitsRespectsACancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	if _, err := NewSource(&jsonClient{}).RateLimits(ctx); err == nil {
+	client := &jsonClient{}
+	if _, err := NewSource(client).RateLimits(ctx); err == nil {
 		t.Fatal("a cancelled context must stop the call")
+	}
+	if len(client.requested) != 0 {
+		t.Fatalf("request was made despite cancelled context: %v", client.requested)
+	}
+}
+
+func TestRepositoryCountRespectsACancelledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	client := &jsonClient{}
+	if _, err := NewSource(client).RepositoryCount(ctx, "acme"); err == nil {
+		t.Fatal("a cancelled context must stop the call")
+	}
+	if len(client.requested) != 0 {
+		t.Fatalf("request was made despite cancelled context: %v", client.requested)
 	}
 }

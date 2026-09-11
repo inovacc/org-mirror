@@ -73,7 +73,7 @@ func (s *Source) RepositoryCount(ctx context.Context, organization string) (int,
 		return 0, err
 	}
 	var payload struct {
-		PublicRepos int `json:"public_repos"`
+		PublicRepos  int `json:"public_repos"`
 		TotalPrivate int `json:"total_private_repos"`
 	}
 	path := fmt.Sprintf("orgs/%s", url.PathEscape(organization))
