@@ -99,6 +99,9 @@ type fakeClock struct {
 	now   time.Time
 	slept []time.Duration
 	err   error
+	// onSleep runs while a sleep is in flight, so a test can simulate another
+	// goroutine changing state that the sleeping code will act on when it wakes.
+	onSleep func()
 }
 
 func newFakeClock(start time.Time) *fakeClock {
@@ -123,6 +126,12 @@ func (c *fakeClock) Sleep(ctx context.Context, d time.Duration) error {
 	if d > 0 {
 		c.slept = append(c.slept, d)
 		c.now = c.now.Add(d)
+	}
+	if c.onSleep != nil {
+		hook := c.onSleep
+		c.mu.Unlock()
+		hook()
+		c.mu.Lock()
 	}
 	return nil
 }
@@ -737,6 +746,36 @@ func TestTransportFailsRatherThanWaitingLongerThanMaxWait(t *testing.T) {
 	}
 }
 
+func TestTransportKeepsANewerHoldArmedWhileWaitingOutAnOlderOne(t *testing.T) {
+	clock := newFakeClock(time.Unix(1_700_000_000, 0))
+	transport := NewTransport(TransportOptions{Base: &stubTransport{}, Clock: clock, MaxWait: time.Hour})
+
+	// Arm an old hold, then simulate a concurrent response arming a later one
+	// while the first wait is still outstanding.
+	old := clock.Now().Add(time.Minute)
+	newer := clock.Now().Add(time.Hour)
+	transport.mu.Lock()
+	transport.holdUntil = old
+	transport.mu.Unlock()
+
+	clock.onSleep = func() {
+		transport.mu.Lock()
+		transport.holdUntil = newer
+		transport.mu.Unlock()
+	}
+	if err := transport.honourHold(context.Background()); err != nil {
+		t.Fatalf("honour hold: %v", err)
+	}
+	clock.onSleep = nil
+
+	transport.mu.Lock()
+	remaining := transport.holdUntil
+	transport.mu.Unlock()
+	if !remaining.Equal(newer) {
+		t.Fatalf("holdUntil = %v, want the newer hold %v to survive", remaining, newer)
+	}
+}
+
 func TestTransportReportsWaitsToTheNotifyHook(t *testing.T) {
 	clock := newFakeClock(time.Unix(1_700_000_000, 0))
 	base := &stubTransport{responses: []stubResponse{
@@ -772,8 +811,19 @@ func TestTransportStopsWaitingWhenTheContextIsCancelled(t *testing.T) {
 	request := newRequest(t, ctx)
 	cancel()
 
-	if _, err := transport.RoundTrip(request); err == nil {
-		t.Fatal("a cancelled context must abort the round trip")
+	_, err := transport.RoundTrip(request)
+
+	// All three assertions together pin the behaviour. Asserting only that err is
+	// non-nil would pass even if the context were ignored, because the stub runs
+	// out of scripted responses and errors for an unrelated reason.
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	if base.calls != 1 {
+		t.Fatalf("calls = %d, want the cancellation to abort before a retry", base.calls)
+	}
+	if got := clock.sleeps(); len(got) != 0 {
+		t.Fatalf("slept %v, want the wait to be refused outright", got)
 	}
 }
 ```
@@ -953,7 +1003,7 @@ func (t *Transport) honourHold(ctx context.Context) error {
 	}
 	remaining := hold.Sub(t.clock.Now())
 	if remaining <= 0 {
-		t.clearHold()
+		t.clearHold(hold)
 		return nil
 	}
 	if remaining > t.maxWait {
@@ -967,14 +1017,19 @@ func (t *Transport) honourHold(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	t.clearHold()
+	t.clearHold(hold)
 	return nil
 }
 
-func (t *Transport) clearHold() {
+// clearHold releases a hold only if it is still the one we waited out. A newer
+// hold armed by a concurrent response must not be silently discarded, or a
+// later request skips a wait it should have honoured.
+func (t *Transport) clearHold(waited time.Time) {
 	t.mu.Lock()
-	t.holdUntil = time.Time{}
-	t.mu.Unlock()
+	defer t.mu.Unlock()
+	if t.holdUntil.Equal(waited) {
+		t.holdUntil = time.Time{}
+	}
 }
 
 func (t *Transport) sleep(ctx context.Context, wait Wait) error {
