@@ -169,7 +169,7 @@ func (t *Transport) honourHold(ctx context.Context) error {
 	}
 	remaining := hold.Sub(t.clock.Now())
 	if remaining <= 0 {
-		t.clearHold()
+		t.clearHold(hold)
 		return nil
 	}
 	if remaining > t.maxWait {
@@ -183,14 +183,18 @@ func (t *Transport) honourHold(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	t.clearHold()
+	t.clearHold(hold)
 	return nil
 }
 
-func (t *Transport) clearHold() {
+// clearHold releases a hold only if it is still the one we waited out, so a
+// newer hold armed by a concurrent response is not silently discarded.
+func (t *Transport) clearHold(waited time.Time) {
 	t.mu.Lock()
-	t.holdUntil = time.Time{}
-	t.mu.Unlock()
+	defer t.mu.Unlock()
+	if t.holdUntil.Equal(waited) {
+		t.holdUntil = time.Time{}
+	}
 }
 
 func (t *Transport) sleep(ctx context.Context, wait Wait) error {

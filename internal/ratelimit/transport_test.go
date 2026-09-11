@@ -298,7 +298,71 @@ func TestTransportStopsWaitingWhenTheContextIsCancelled(t *testing.T) {
 	request := newRequest(t, ctx)
 	cancel()
 
-	if _, err := transport.RoundTrip(request); err == nil {
-		t.Fatal("a cancelled context must abort the round trip")
+	_, err := transport.RoundTrip(request)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	if base.calls != 1 {
+		t.Fatalf("calls = %d, want the retry loop to stop at the wait, not retry the request", base.calls)
+	}
+	if got := clock.sleeps(); len(got) != 0 {
+		t.Fatalf("slept %v, want the cancelled context to abort the wait before it is recorded", got)
+	}
+}
+
+// armingClock wraps a fakeClock and, on its first Sleep call, invokes arm
+// before delegating to the underlying fake — simulating a concurrent
+// response arming a newer hold on the Transport while an earlier call is
+// still "asleep" waiting out an older one.
+type armingClock struct {
+	*fakeClock
+	arm   func()
+	armed bool
+}
+
+func (c *armingClock) Sleep(ctx context.Context, d time.Duration) error {
+	if !c.armed {
+		c.armed = true
+		c.arm()
+	}
+	return c.fakeClock.Sleep(ctx, d)
+}
+
+// TestTransportHonoursANewerHoldArmedWhileWaitingOutAnOlderOne proves the
+// compare-and-clear fix in clearHold: a concurrent observe() that arms a
+// later hold while honourHold is asleep on an earlier one must not have that
+// newer hold silently wiped once the earlier wait finishes.
+//
+// Driving this race through RoundTrip's public surface would need two
+// goroutines interleaved mid-sleep, which the fakeClock has no hook for
+// since its Sleep is synchronous. Instead this calls honourHold directly and
+// uses armingClock to mutate transport.holdUntil from inside the Sleep call
+// itself, reproducing the exact time-of-check-to-time-of-use window the
+// finding describes without needing real concurrency.
+func TestTransportHonoursANewerHoldArmedWhileWaitingOutAnOlderOne(t *testing.T) {
+	base := newFakeClock(time.Unix(1_700_000_000, 0))
+	var transport *Transport
+	newerHold := base.Now().Add(45 * time.Minute)
+	clock := &armingClock{fakeClock: base, arm: func() {
+		transport.mu.Lock()
+		transport.holdUntil = newerHold
+		transport.mu.Unlock()
+	}}
+	transport = NewTransport(TransportOptions{Clock: clock, MaxWait: time.Hour})
+
+	olderHold := base.Now().Add(10 * time.Minute)
+	transport.mu.Lock()
+	transport.holdUntil = olderHold
+	transport.mu.Unlock()
+
+	if err := transport.honourHold(context.Background()); err != nil {
+		t.Fatalf("honourHold: %v", err)
+	}
+
+	transport.mu.Lock()
+	got := transport.holdUntil
+	transport.mu.Unlock()
+	if !got.Equal(newerHold) {
+		t.Fatalf("holdUntil = %v, want the newer hold %v to survive waiting out the stale one", got, newerHold)
 	}
 }
