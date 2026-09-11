@@ -241,3 +241,47 @@ func TestWaitReporterWritesToTheFallbackUntilAFrontEndAttaches(t *testing.T) {
 		t.Fatal("once a front end is attached the fallback must stay quiet")
 	}
 }
+
+func TestRunOutcomePrefersTheRunErrorOverAFinishError(t *testing.T) {
+	runErr := errors.New("discovery failed")
+	finishErr := errors.New("database write failed")
+
+	cases := []struct {
+		name      string
+		runErr    error
+		finishErr error
+		want      error
+	}{
+		{name: "run error wins over a finish error", runErr: runErr, finishErr: finishErr, want: runErr},
+		{name: "run error alone", runErr: runErr, want: runErr},
+		{name: "finish error alone, nothing better to report", finishErr: finishErr, want: finishErr},
+		{name: "neither failed", want: nil},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := runOutcome(testCase.runErr, testCase.finishErr); got != testCase.want {
+				t.Fatalf("runOutcome(%v, %v) = %v, want %v", testCase.runErr, testCase.finishErr, got, testCase.want)
+			}
+		})
+	}
+}
+
+func TestShouldPrintResults(t *testing.T) {
+	cases := []struct {
+		status history.Status
+		want   bool
+	}{
+		{status: history.StatusCompleted, want: true},
+		{status: history.StatusInterrupted, want: true},
+		{status: history.StatusFailed, want: false},
+	}
+
+	for _, testCase := range cases {
+		t.Run(string(testCase.status), func(t *testing.T) {
+			if got := shouldPrintResults(testCase.status); got != testCase.want {
+				t.Fatalf("shouldPrintResults(%q) = %v, want %v", testCase.status, got, testCase.want)
+			}
+		})
+	}
+}

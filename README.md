@@ -61,9 +61,14 @@ org-mirror limit floci-io
 ```
 
 Every repository is written to the history database the moment it finishes, so a
-crash, a dropped connection or `Ctrl+C` loses nothing. The next sync of the same
-organization continues the interrupted run and skips what was already done.
-Repositories that failed are retried rather than skipped.
+crash, a dropped connection or `Ctrl+C` loses nothing. Cancelling a run does not
+exit silently: it still prints a result line for every repository that finished
+before the interruption, followed by a line stating how many were recorded and
+that running the same sync again continues from there. Silence would look like
+nothing happened, when in fact everything up to that point was saved. The exit
+code stays non-zero, so scripts still see the interruption as unsuccessful. The
+next sync of the same organization continues the interrupted run and skips what
+was already done. Repositories that failed are retried rather than skipped.
 
 Each real run writes `C:\Users\dyamm\Downloads\mirror\orgs\<organization>\metadata.json`
 by default. It includes the UTC run time and, for each discovered repository, its

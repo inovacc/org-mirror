@@ -110,20 +110,27 @@ next sync of the same organization.`,
 				metadata, err = service.MirrorWithOptions(command.Context(), organization, root, dryRun, options)
 			}
 
-			if finishErr := run.Finish(finalStatus(err, metadata.Truncated), time.Now(), err); finishErr != nil {
-				return finishErr
+			status := finalStatus(err, metadata.Truncated)
+			finishErr := run.Finish(status, time.Now(), err)
+			if finishErr != nil {
+				// The run's own outcome is what the operator needs to see; a
+				// failure to record it is worth saying out loud but must
+				// never replace the real error.
+				fmt.Fprintf(command.ErrOrStderr(), "warning: could not record the run's final status: %v\n", finishErr)
 			}
-			if err != nil {
-				return err
+			outcome := runOutcome(err, finishErr)
+
+			if shouldPrintResults(status) {
+				printResults(command.OutOrStdout(), metadata.Repositories)
 			}
 
-			for _, result := range metadata.Repositories {
-				if result.Message == "" {
-					fmt.Fprintf(command.OutOrStdout(), "%s: %s\n", result.Repository.NameWithOwner, result.Outcome)
-					continue
+			if outcome != nil {
+				if status == history.StatusInterrupted {
+					fmt.Fprintf(command.OutOrStdout(), "interrupted: %d repositories recorded; run sync again to continue\n", len(metadata.Repositories))
 				}
-				fmt.Fprintf(command.OutOrStdout(), "%s: %s (%s)\n", result.Repository.NameWithOwner, result.Outcome, result.Message)
+				return outcome
 			}
+
 			if metadata.Truncated {
 				fmt.Fprintf(command.OutOrStdout(), "stopped at the --limit of %d; run sync again to continue\n", limit)
 			}
@@ -211,6 +218,39 @@ func resumeSkips(database *history.Database, organization string, disabled, dryR
 		return nil, nil, err
 	}
 	return run, map[string]string{}, nil
+}
+
+// printResults writes one line per repository result, in the same format the
+// success and interrupted paths both use, so they share it rather than each
+// keeping their own copy of the loop.
+func printResults(w io.Writer, results []mirror.Result) {
+	for _, result := range results {
+		if result.Message == "" {
+			fmt.Fprintf(w, "%s: %s\n", result.Repository.NameWithOwner, result.Outcome)
+			continue
+		}
+		fmt.Fprintf(w, "%s: %s (%s)\n", result.Repository.NameWithOwner, result.Outcome, result.Message)
+	}
+}
+
+// runOutcome decides what the command reports when the run itself and the
+// bookkeeping that closes it can fail independently. The run's own error is
+// what the operator needs to act on, so it always wins; a finish error is
+// surfaced only when there is no more informative error to report instead.
+func runOutcome(runErr, finishErr error) error {
+	if runErr != nil {
+		return runErr
+	}
+	return finishErr
+}
+
+// shouldPrintResults reports whether the per-repository result lines are worth
+// showing for a run that ended in the given status. A completed or interrupted
+// run always has something the operator should see - interrupted work was
+// checkpointed, and that is exactly what resuming needs the operator to trust.
+// A genuine failure is usually a discovery failure, which has nothing to list.
+func shouldPrintResults(status history.Status) bool {
+	return status == history.StatusCompleted || status == history.StatusInterrupted
 }
 
 // finalStatus keeps a cancelled or capped run distinct from a failed one, because
