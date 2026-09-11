@@ -35,6 +35,7 @@ func (s *Source) ListRepositories(ctx context.Context, organization string) ([]m
 			Private       bool   `json:"private"`
 			Archived      bool   `json:"archived"`
 			Fork          bool   `json:"fork"`
+			OpenIssues    int    `json:"open_issues_count"`
 		}
 		path := fmt.Sprintf("orgs/%s/repos?per_page=100&page=%d&type=all", url.PathEscape(organization), page)
 		if err := s.client.Get(path, &rows); err != nil {
@@ -49,6 +50,7 @@ func (s *Source) ListRepositories(ctx context.Context, organization string) ([]m
 				Private:       row.Private,
 				Archived:      row.Archived,
 				Fork:          row.Fork,
+				OpenIssues:    row.OpenIssues,
 			})
 		}
 		if len(rows) < 100 {

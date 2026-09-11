@@ -10,7 +10,7 @@ import (
 func TestSourceListsAndMapsOrganizationRepositories(t *testing.T) {
 	client := &scriptedRESTClient{responses: map[string]string{
 		"orgs/inovacc/repos?per_page=100&page=1&type=all": `[
-			{"name":"private-api","full_name":"inovacc/private-api","clone_url":"https://github.com/inovacc/private-api.git","default_branch":"main","private":true,"archived":false,"fork":false},
+			{"name":"private-api","full_name":"inovacc/private-api","clone_url":"https://github.com/inovacc/private-api.git","default_branch":"main","private":true,"archived":false,"fork":false,"open_issues_count":7},
 			{"name":"legacy","full_name":"inovacc/legacy","clone_url":"https://github.com/inovacc/legacy.git","default_branch":"master","private":false,"archived":true,"fork":true}
 		]`,
 	}}
@@ -27,6 +27,9 @@ func TestSourceListsAndMapsOrganizationRepositories(t *testing.T) {
 	}
 	if repositories[0].CloneURL != "https://github.com/inovacc/private-api.git" {
 		t.Fatalf("clone URL mapped incorrectly: %#v", repositories[0])
+	}
+	if repositories[0].OpenIssues != 7 {
+		t.Fatalf("open issues mapped incorrectly: %#v", repositories[0])
 	}
 	if repositories[1].DefaultBranch != "master" || !repositories[1].Archived || !repositories[1].Fork {
 		t.Fatalf("repository properties mapped incorrectly: %#v", repositories[1])

@@ -59,6 +59,7 @@ cmake-build-*/
 
 # Runtime mirror data
 orgs/
+.tmp-*
 
 # Generated files
 cmd/version.go

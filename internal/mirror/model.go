@@ -10,6 +10,7 @@ type Repository struct {
 	Private       bool   `json:"private"`
 	Archived      bool   `json:"archived"`
 	Fork          bool   `json:"fork"`
+	OpenIssues    int    `json:"openIssues"`
 }
 
 type Outcome string

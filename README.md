@@ -31,12 +31,20 @@ org-mirror sync floci-io
 
 # Choose another parent directory.
 org-mirror sync floci-io --root D:\\mirrors
+
+# Choose another sync-history database.
+org-mirror sync floci-io --database D:\\mirrors\\database.db
 ```
 
 Each real run writes `C:\Users\dyamm\Downloads\mirror\orgs\<organization>\metadata.json`
 by default. It includes the UTC run time and, for each discovered repository, its
 local path, GitHub properties, default branch, sync outcome, and local/upstream commit
 hashes when available.
+
+Every run also appends history to `C:\Users\dyamm\Downloads\mirror\database.db`.
+The SQLite database contains `sync_runs` (organization, start/end time, status, and
+repository count) and `repositories` (branch, local/upstream commit SHA, open issue
+count, outcome, path, timestamp, and message). Use `--database` to change its path.
 
 The mirror never resets, stashes, deletes, or overwrites a working copy. A dirty,
 ahead, diverged, or detached checkout is left unchanged and recorded as a `conflict`.
