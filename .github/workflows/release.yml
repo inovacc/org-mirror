@@ -9,76 +9,26 @@ permissions:
   contents: write
 
 jobs:
-  release:
-    name: Build and release
+  goreleaser:
+    name: Run GoReleaser
     runs-on: ubuntu-latest
-
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version-file: 'go.mod'
           cache: true
 
-      - name: Test
-        run: go test ./...
-
-      - name: Build release archives
-        shell: bash
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: latest
+          args: release --clean
         env:
-          VERSION: ${{ github.ref_name }}
-          COMMIT: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-
-          build_time="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-          ldflags="-s -w -X main.Version=${VERSION} -X main.GitHash=${COMMIT} -X main.BuildTime=${build_time}"
-          mkdir -p dist
-
-          while read -r goos goarch; do
-            archive="org-mirror_${VERSION}_${goos}_${goarch}"
-            binary="${archive}"
-            if [[ "${goos}" == "windows" ]]; then
-              binary="${binary}.exe"
-            fi
-
-            CGO_ENABLED=0 GOOS="${goos}" GOARCH="${goarch}" \
-              go build -trimpath -ldflags "${ldflags}" -o "dist/${binary}" ./cmd/org-mirror
-
-            if [[ "${goos}/${goarch}" == "linux/amd64" ]]; then
-              "dist/${binary}" version | grep -F "Version:    ${VERSION}"
-            fi
-
-            if [[ "${goos}" == "windows" ]]; then
-              zip -j "dist/${archive}.zip" "dist/${binary}"
-            else
-              tar -C dist -czf "dist/${archive}.tar.gz" "${binary}"
-            fi
-            rm "dist/${binary}"
-          done <<'TARGETS'
-          linux amd64
-          linux arm64
-          darwin amd64
-          darwin arm64
-          windows amd64
-          windows arm64
-          TARGETS
-
-          (cd dist && sha256sum ./*.tar.gz ./*.zip > checksums.txt)
-
-      - name: Create GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ github.ref_name }}
-        run: |
-          if gh release view "${VERSION}" >/dev/null 2>&1; then
-            gh release upload "${VERSION}" dist/* --clobber
-          else
-            gh release create "${VERSION}" dist/* \
-              --verify-tag \
-              --generate-notes \
-              --title "${VERSION}"
-          fi
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
