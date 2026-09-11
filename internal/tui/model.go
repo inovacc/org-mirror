@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/inovacc/org-mirror/internal/mirror"
@@ -16,6 +17,9 @@ type Model struct {
 	current      string
 	completed    int
 	total        int
+	frame        int
+	startedAt    time.Time
+	elapsed      time.Duration
 	recent       []mirror.Result
 	events       chan tea.Msg
 	operation    MirrorFunc
@@ -32,6 +36,10 @@ type operationDoneMsg struct {
 	err      error
 }
 
+type activityTickMsg struct {
+	at time.Time
+}
+
 func NewModel(organization string, dryRun bool) Model {
 	return Model{organization: organization, dryRun: dryRun}
 }
@@ -40,7 +48,7 @@ func (m Model) Init() tea.Cmd {
 	if m.operation == nil {
 		return nil
 	}
-	return tea.Batch(m.waitForProgress(), m.runOperation())
+	return tea.Batch(m.waitForProgress(), m.runOperation(), m.activityTick())
 }
 
 func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
@@ -53,6 +61,9 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 	case mirror.ProgressEvent:
+		if m.startedAt.IsZero() {
+			m.startedAt = time.Now()
+		}
 		switch message.Kind {
 		case mirror.ProgressDiscoveryStarted:
 			m.discovering = true
@@ -70,6 +81,16 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.recent = append(m.recent, message.Result)
 		}
 		return m, m.waitForProgress()
+	case activityTickMsg:
+		if m.startedAt.IsZero() {
+			m.startedAt = message.at
+		}
+		m.frame++
+		m.elapsed = message.at.Sub(m.startedAt).Round(time.Second)
+		if m.elapsed < 0 {
+			m.elapsed = 0
+		}
+		return m, m.activityTick()
 	case operationDoneMsg:
 		m.metadata = message.metadata
 		m.err = message.err
@@ -77,6 +98,12 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 	return m, nil
+}
+
+func (m Model) activityTick() tea.Cmd {
+	return tea.Tick(500*time.Millisecond, func(at time.Time) tea.Msg {
+		return activityTickMsg{at: at}
+	})
 }
 
 func (m Model) waitForProgress() tea.Cmd {
@@ -110,14 +137,16 @@ func (m Model) View() tea.View {
 
 	var content strings.Builder
 	fmt.Fprintf(&content, "org-mirror  %s  (%s)\n\n", m.organization, mode)
+	spinner := []string{"|", "/", "-", "\\"}[m.frame%4]
 	if m.discovering || m.total == 0 {
-		content.WriteString("Discovering repositories...\n")
+		fmt.Fprintf(&content, "Discovering repositories... %s\n", spinner)
 	} else {
 		fmt.Fprintf(&content, "%s  %d / %d\n", progressBar(m.completed, m.total, 32), m.completed, m.total)
 		fmt.Fprintf(&content, "Remaining: %d\n", max(m.total-m.completed, 0))
 		if m.current != "" {
 			fmt.Fprintf(&content, "Current:   %s\n", m.current)
 		}
+		fmt.Fprintf(&content, "Working:   %s   Elapsed: %s\n", spinner, formatElapsed(m.elapsed))
 	}
 
 	if len(m.recent) > 0 {
@@ -133,6 +162,13 @@ func (m Model) View() tea.View {
 	view.AltScreen = true
 	view.WindowTitle = "org-mirror"
 	return view
+}
+
+func formatElapsed(elapsed time.Duration) string {
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	return elapsed.Round(time.Second).String()
 }
 
 func progressBar(completed, total, width int) string {
