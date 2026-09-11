@@ -41,7 +41,7 @@ func newSyncCommand() *cobra.Command {
 				return err
 			}
 			defer database.Close()
-			source, token, _, err := githubapi.NewAuthenticatedSource("github.com")
+			source, _, token, _, err := githubapi.NewAuthenticatedSource("github.com", githubapi.ClientOptions{})
 			if err != nil {
 				return err
 			}
