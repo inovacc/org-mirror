@@ -1,0 +1,9 @@
+# Go source is always LF. Without this, core.autocrlf=true rewrites files on
+# checkout and gofmt -l reports every one of them as unformatted, which makes
+# the formatting gate useless on Windows checkouts.
+*.go text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+go.mod text eol=lf
+go.sum text eol=lf
