@@ -60,3 +60,40 @@ func TestModelShowsActivityWhileRepositoryIsRunning(t *testing.T) {
 		}
 	}
 }
+
+func TestModelRendersAWaitingLine(t *testing.T) {
+	model := NewModel("acme", false)
+	model.total = 10
+	model.completed = 3
+
+	updated, _ := model.Update(mirror.ProgressEvent{
+		Kind:    mirror.ProgressWaiting,
+		Message: "GitHub rate limit reached, waiting for the reset",
+		Until:   time.Unix(1700003600, 0).UTC(),
+	})
+	view := updated.(Model).View().Content
+
+	if !strings.Contains(view, "Waiting:") {
+		t.Fatalf("waiting line missing from view:\n%s", view)
+	}
+	if !strings.Contains(view, "rate limit") {
+		t.Fatalf("waiting reason missing from view:\n%s", view)
+	}
+}
+
+func TestModelClearsTheWaitingLineWhenWorkResumes(t *testing.T) {
+	model := NewModel("acme", false)
+	model.total = 10
+
+	waiting, _ := model.Update(mirror.ProgressEvent{Kind: mirror.ProgressWaiting, Message: "waiting"})
+	resumed, _ := waiting.(Model).Update(mirror.ProgressEvent{
+		Kind:       mirror.ProgressRepositoryStarted,
+		Repository: mirror.Repository{NameWithOwner: "acme/one"},
+		Completed:  1,
+		Total:      10,
+	})
+
+	if strings.Contains(resumed.(Model).View().Content, "Waiting:") {
+		t.Fatal("the waiting line must clear once work resumes")
+	}
+}

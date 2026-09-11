@@ -1,9 +1,19 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/inovacc/org-mirror/internal/history"
+	"github.com/inovacc/org-mirror/internal/mirror"
+	"github.com/inovacc/org-mirror/internal/ratelimit"
 )
 
 func TestDefaultSyncPathsUseCurrentUsersHome(t *testing.T) {
@@ -66,5 +76,168 @@ func TestSyncCommandRootFlagOverridesDefault(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("root flag = %q, want %q", got, want)
+	}
+}
+
+func TestFinalStatus(t *testing.T) {
+	cases := []struct {
+		name      string
+		err       error
+		truncated bool
+		want      history.Status
+	}{
+		{name: "clean run", want: history.StatusCompleted},
+		{name: "capped run", truncated: true, want: history.StatusInterrupted},
+		{name: "cancelled run", err: context.Canceled, want: history.StatusInterrupted},
+		{name: "deadline", err: context.DeadlineExceeded, want: history.StatusInterrupted},
+		{name: "wrapped cancellation", err: fmt.Errorf("mirror: %w", context.Canceled), want: history.StatusInterrupted},
+		{name: "real failure", err: errors.New("discovery failed"), want: history.StatusFailed},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := finalStatus(testCase.err, testCase.truncated); got != testCase.want {
+				t.Fatalf("finalStatus = %q, want %q", got, testCase.want)
+			}
+		})
+	}
+}
+
+func TestResumeSkipsReturnsTheInterruptedRunsCompletedRepositories(t *testing.T) {
+	root, databasePath := defaultSyncPaths(t.TempDir())
+	database, err := prepareSyncStorage(root, databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	previous, err := database.StartRun("acme", time.Unix(1, 0), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := mirror.Result{
+		Repository: mirror.Repository{Name: "one", NameWithOwner: "acme/one"},
+		Outcome:    mirror.OutcomeCloned,
+	}
+	if err := previous.RecordRepository(done, time.Unix(2, 0)); err != nil {
+		t.Fatal(err)
+	}
+
+	run, skips, err := resumeSkips(database, "acme", false, false)
+	if err != nil {
+		t.Fatalf("resume skips: %v", err)
+	}
+	if run.ID() != previous.ID() {
+		t.Fatalf("run %d, want the interrupted run %d", run.ID(), previous.ID())
+	}
+	if _, ok := skips["acme/one"]; !ok {
+		t.Fatalf("skips = %v, want acme/one", skips)
+	}
+}
+
+func TestResumeSkipsStartsFreshWhenResumeIsDisabled(t *testing.T) {
+	root, databasePath := defaultSyncPaths(t.TempDir())
+	database, err := prepareSyncStorage(root, databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	previous, err := database.StartRun("acme", time.Unix(1, 0), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := mirror.Result{
+		Repository: mirror.Repository{Name: "one", NameWithOwner: "acme/one"},
+		Outcome:    mirror.OutcomeCloned,
+	}
+	if err := previous.RecordRepository(done, time.Unix(2, 0)); err != nil {
+		t.Fatal(err)
+	}
+
+	run, skips, err := resumeSkips(database, "acme", true, false)
+	if err != nil {
+		t.Fatalf("resume skips: %v", err)
+	}
+	if run.ID() == previous.ID() {
+		t.Fatal("no-resume must open a new run")
+	}
+	if len(skips) != 0 {
+		t.Fatalf("skips = %v, want none", skips)
+	}
+}
+
+func TestResumeSkipsStartsAFreshRunWhenNothingIsResumable(t *testing.T) {
+	root, databasePath := defaultSyncPaths(t.TempDir())
+	database, err := prepareSyncStorage(root, databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	run, skips, err := resumeSkips(database, "acme", false, false)
+	if err != nil {
+		t.Fatalf("resume skips: %v", err)
+	}
+	if run == nil || run.ID() == 0 {
+		t.Fatal("a fresh run must be opened")
+	}
+	if len(skips) != 0 {
+		t.Fatalf("skips = %v, want none", skips)
+	}
+}
+
+func TestNewSyncCommandExposesTheResilienceFlags(t *testing.T) {
+	command := newSyncCommand()
+	for _, name := range []string{"delay", "max-wait", "retries", "no-resume", "limit"} {
+		if command.Flags().Lookup(name) == nil {
+			t.Fatalf("sync must expose the %s flag", name)
+		}
+	}
+
+	delay, err := command.Flags().GetDuration("delay")
+	if err != nil {
+		t.Fatalf("read delay: %v", err)
+	}
+	if delay != 750*time.Millisecond {
+		t.Fatalf("default delay = %v, want 750ms", delay)
+	}
+	retries, err := command.Flags().GetInt("retries")
+	if err != nil {
+		t.Fatalf("read retries: %v", err)
+	}
+	if retries != 3 {
+		t.Fatalf("default retries = %d, want 3", retries)
+	}
+	limit, err := command.Flags().GetInt("limit")
+	if err != nil {
+		t.Fatalf("read limit: %v", err)
+	}
+	if limit != 0 {
+		t.Fatalf("default limit = %d, want 0", limit)
+	}
+}
+
+func TestWaitReporterWritesToTheFallbackUntilAFrontEndAttaches(t *testing.T) {
+	var out bytes.Buffer
+	reporter := &waitReporter{organization: "acme", fallback: &out}
+
+	reporter.notify(ratelimit.Wait{Reason: "GitHub rate limit reached", Duration: 30 * time.Second})
+	if !strings.Contains(out.String(), "GitHub rate limit reached") {
+		t.Fatalf("fallback output = %q", out.String())
+	}
+
+	var events []mirror.ProgressEvent
+	reporter.attach(func(event mirror.ProgressEvent) { events = append(events, event) })
+	reporter.notify(ratelimit.Wait{Reason: "waiting for the reset", Duration: time.Minute})
+
+	if len(events) != 1 || events[0].Kind != mirror.ProgressWaiting {
+		t.Fatalf("events = %#v, want one waiting event", events)
+	}
+	if events[0].Message != "waiting for the reset" || events[0].Organization != "acme" {
+		t.Fatalf("event = %#v", events[0])
+	}
+	if strings.Count(out.String(), "waiting") > 1 {
+		t.Fatal("once a front end is attached the fallback must stay quiet")
 	}
 }

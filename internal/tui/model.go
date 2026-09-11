@@ -20,6 +20,8 @@ type Model struct {
 	frame        int
 	startedAt    time.Time
 	elapsed      time.Duration
+	waiting      string
+	waitingUntil time.Time
 	recent       []mirror.Result
 	events       chan tea.Msg
 	operation    MirrorFunc
@@ -66,19 +68,26 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch message.Kind {
 		case mirror.ProgressDiscoveryStarted:
+			m.waiting = ""
 			m.discovering = true
 		case mirror.ProgressDiscoveryCompleted:
+			m.waiting = ""
 			m.discovering = false
 			m.total = message.Total
 		case mirror.ProgressRepositoryStarted:
+			m.waiting = ""
 			m.current = message.Repository.NameWithOwner
 			m.completed = message.Completed
 			m.total = message.Total
 		case mirror.ProgressRepositoryCompleted:
+			m.waiting = ""
 			m.current = message.Repository.NameWithOwner
 			m.completed = message.Completed
 			m.total = message.Total
 			m.recent = append(m.recent, message.Result)
+		case mirror.ProgressWaiting:
+			m.waiting = message.Message
+			m.waitingUntil = message.Until
 		}
 		return m, m.waitForProgress()
 	case activityTickMsg:
@@ -147,6 +156,14 @@ func (m Model) View() tea.View {
 			fmt.Fprintf(&content, "Current:   %s\n", m.current)
 		}
 		fmt.Fprintf(&content, "Working:   %s   Elapsed: %s\n", spinner, formatElapsed(m.elapsed))
+	}
+
+	if m.waiting != "" {
+		if m.waitingUntil.IsZero() {
+			fmt.Fprintf(&content, "Waiting:   %s\n", m.waiting)
+		} else {
+			fmt.Fprintf(&content, "Waiting:   %s (until %s)\n", m.waiting, m.waitingUntil.UTC().Format("15:04:05Z"))
+		}
 	}
 
 	if len(m.recent) > 0 {

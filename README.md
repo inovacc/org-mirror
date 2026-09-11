@@ -36,6 +36,35 @@ org-mirror sync floci-io --root D:\\mirrors
 org-mirror sync floci-io --database D:\\mirrors\\database.db
 ```
 
+### Pacing, resume and limits
+
+The sync paces itself between repositories. The delay protects two different
+things: GitHub's secondary rate limits react to bursts of requests, and local
+endpoint-protection software reacts to bursts of process creation, which is what
+a fast mirror run of several hundred repositories looks like.
+
+```bash
+# Slow down to one repository every two seconds.
+org-mirror sync floci-io --delay 2s
+
+# Turn pacing off entirely, accepting both risks.
+org-mirror sync floci-io --delay 0
+
+# Process 50 repositories, then stop. Run it again to continue.
+org-mirror sync floci-io --limit 50
+
+# Ignore an interrupted run and start over.
+org-mirror sync floci-io --no-resume
+
+# Check the remaining API budget before starting.
+org-mirror limit floci-io
+```
+
+Every repository is written to the history database the moment it finishes, so a
+crash, a dropped connection or `Ctrl+C` loses nothing. The next sync of the same
+organization continues the interrupted run and skips what was already done.
+Repositories that failed are retried rather than skipped.
+
 Each real run writes `C:\Users\dyamm\Downloads\mirror\orgs\<organization>\metadata.json`
 by default. It includes the UTC run time and, for each discovered repository, its
 local path, GitHub properties, default branch, sync outcome, and local/upstream commit
@@ -57,6 +86,7 @@ in a full-screen interface. Redirected output and `--no-tui` use plain text inst
 | Command | Description |
 |---------|-------------|
 | `sync <organization>` | Mirror all repositories accessible to the authenticated `gh` account |
+| `limit [organization]` | Show the account's GitHub rate-limit budget |
 | `version` | Print version information |
 
 ## Development
