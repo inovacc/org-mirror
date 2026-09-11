@@ -21,6 +21,7 @@ const (
 	OutcomeUnchanged           Outcome = "unchanged"
 	OutcomeConflict            Outcome = "conflict"
 	OutcomeError               Outcome = "error"
+	OutcomeSkipped             Outcome = "skipped"
 	OutcomeAbsentFromDiscovery Outcome = "absent_from_discovery"
 )
 
@@ -37,4 +38,7 @@ type Metadata struct {
 	Organization string    `json:"organization"`
 	GeneratedAt  time.Time `json:"generatedAt"`
 	Repositories []Result  `json:"repositories"`
+	// Truncated reports that a repository cap stopped the run before every
+	// repository was processed, so the next run has work to continue.
+	Truncated bool `json:"truncated,omitempty"`
 }

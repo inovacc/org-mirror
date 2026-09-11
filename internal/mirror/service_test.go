@@ -2,6 +2,7 @@ package mirror
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -197,4 +198,191 @@ type scriptedRepositorySource struct {
 func (s *scriptedRepositorySource) ListRepositories(_ context.Context, organization string) ([]Repository, error) {
 	s.organization = organization
 	return s.repositories, s.err
+}
+
+type countingWaiter struct {
+	waits int
+	err   error
+}
+
+func (w *countingWaiter) Wait(context.Context) error {
+	w.waits++
+	return w.err
+}
+
+func threeRepositories() *scriptedRepositorySource {
+	return &scriptedRepositorySource{repositories: []Repository{
+		{Name: "one", NameWithOwner: "acme/one", CloneURL: "https://github.com/acme/one.git"},
+		{Name: "two", NameWithOwner: "acme/two", CloneURL: "https://github.com/acme/two.git"},
+		{Name: "three", NameWithOwner: "acme/three", CloneURL: "https://github.com/acme/three.git"},
+	}}
+}
+
+func clonesFor(root string, names ...string) map[string]scriptedResponse {
+	responses := map[string]scriptedResponse{}
+	for _, name := range names {
+		path := filepath.Join(root, "acme", name)
+		url := "https://github.com/acme/" + name + ".git"
+		responses[commandKey("", "git", []string{"clone", url, path})] = scriptedResponse{}
+		responses[commandKey(path, "git", []string{"rev-parse", "HEAD"})] = scriptedResponse{output: "local\n"}
+		responses[commandKey(path, "git", []string{"rev-parse", "@{u}"})] = scriptedResponse{output: "remote\n"}
+	}
+	return responses
+}
+
+func TestMirrorPacesEveryRepositoryThatRunsGit(t *testing.T) {
+	root := t.TempDir()
+	runner := &scriptedRunner{responses: clonesFor(root, "one", "two", "three")}
+	waiter := &countingWaiter{}
+
+	metadata, err := NewService(runner, threeRepositories()).MirrorWithOptions(
+		context.Background(), "acme", root, false, MirrorOptions{Pacer: waiter})
+	if err != nil {
+		t.Fatalf("mirror: %v", err)
+	}
+	if len(metadata.Repositories) != 3 {
+		t.Fatalf("results = %d, want 3", len(metadata.Repositories))
+	}
+	if waiter.waits != 3 {
+		t.Fatalf("waits = %d, want one per repository", waiter.waits)
+	}
+}
+
+func TestMirrorPacesAfterAFailedRepository(t *testing.T) {
+	root := t.TempDir()
+	responses := clonesFor(root, "two", "three")
+	failedPath := filepath.Join(root, "acme", "one")
+	responses[commandKey("", "git", []string{"clone", "https://github.com/acme/one.git", failedPath})] = scriptedResponse{
+		output: "remote: Repository not found.", err: errors.New("exit status 128"),
+	}
+	runner := &scriptedRunner{responses: responses}
+	waiter := &countingWaiter{}
+
+	metadata, err := NewService(runner, threeRepositories()).MirrorWithOptions(
+		context.Background(), "acme", root, false, MirrorOptions{Pacer: waiter})
+	if err != nil {
+		t.Fatalf("mirror: %v", err)
+	}
+	if metadata.Repositories[0].Outcome != OutcomeError {
+		t.Fatalf("first outcome = %s, want error", metadata.Repositories[0].Outcome)
+	}
+	if waiter.waits != 3 {
+		t.Fatalf("waits = %d, want the error path to pace like any other", waiter.waits)
+	}
+}
+
+func TestMirrorSkipsRepositoriesRecordedInAnEarlierRun(t *testing.T) {
+	root := t.TempDir()
+	runner := &scriptedRunner{responses: clonesFor(root, "two", "three")}
+	waiter := &countingWaiter{}
+
+	metadata, err := NewService(runner, threeRepositories()).MirrorWithOptions(
+		context.Background(), "acme", root, false, MirrorOptions{
+			Pacer: waiter,
+			Skip:  map[string]string{"acme/one": "completed in run 7"},
+		})
+	if err != nil {
+		t.Fatalf("mirror: %v", err)
+	}
+	if metadata.Repositories[0].Outcome != OutcomeSkipped {
+		t.Fatalf("first outcome = %s, want skipped", metadata.Repositories[0].Outcome)
+	}
+	if metadata.Repositories[0].Message != "completed in run 7" {
+		t.Fatalf("message = %q", metadata.Repositories[0].Message)
+	}
+	if waiter.waits != 2 {
+		t.Fatalf("waits = %d, want a skip not to pace", waiter.waits)
+	}
+}
+
+func TestMirrorStopsAtTheRepositoryLimit(t *testing.T) {
+	root := t.TempDir()
+	runner := &scriptedRunner{responses: clonesFor(root, "one", "two")}
+
+	metadata, err := NewService(runner, threeRepositories()).MirrorWithOptions(
+		context.Background(), "acme", root, false, MirrorOptions{Limit: 2})
+	if err != nil {
+		t.Fatalf("mirror: %v", err)
+	}
+	if len(metadata.Repositories) != 2 {
+		t.Fatalf("results = %d, want 2", len(metadata.Repositories))
+	}
+	if !metadata.Truncated {
+		t.Fatal("a capped run must report that work remains")
+	}
+}
+
+func TestMirrorLimitCountsOnlyProcessedRepositories(t *testing.T) {
+	root := t.TempDir()
+	runner := &scriptedRunner{responses: clonesFor(root, "two")}
+
+	metadata, err := NewService(runner, threeRepositories()).MirrorWithOptions(
+		context.Background(), "acme", root, false, MirrorOptions{
+			Limit: 1,
+			Skip:  map[string]string{"acme/one": "already done"},
+		})
+	if err != nil {
+		t.Fatalf("mirror: %v", err)
+	}
+	if len(metadata.Repositories) != 2 {
+		t.Fatalf("results = %d, want the skip plus one processed repository", len(metadata.Repositories))
+	}
+	if metadata.Repositories[1].Repository.Name != "two" {
+		t.Fatalf("processed %q, want two", metadata.Repositories[1].Repository.Name)
+	}
+	if !metadata.Truncated {
+		t.Fatal("a capped run must report that work remains")
+	}
+}
+
+func TestMirrorCallsTheResultHookForEveryRepository(t *testing.T) {
+	root := t.TempDir()
+	runner := &scriptedRunner{responses: clonesFor(root, "two", "three")}
+	var recorded []string
+
+	_, err := NewService(runner, threeRepositories()).MirrorWithOptions(
+		context.Background(), "acme", root, false, MirrorOptions{
+			Skip: map[string]string{"acme/one": "already done"},
+			OnResult: func(result Result) error {
+				recorded = append(recorded, string(result.Outcome)+" "+result.Repository.Name)
+				return nil
+			},
+		})
+	if err != nil {
+		t.Fatalf("mirror: %v", err)
+	}
+	want := []string{"skipped one", "cloned two", "cloned three"}
+	if len(recorded) != len(want) {
+		t.Fatalf("recorded %v, want %v", recorded, want)
+	}
+	for index := range want {
+		if recorded[index] != want[index] {
+			t.Fatalf("recorded %v, want %v", recorded, want)
+		}
+	}
+}
+
+func TestMirrorAbortsWhenTheResultHookFails(t *testing.T) {
+	root := t.TempDir()
+	runner := &scriptedRunner{responses: clonesFor(root, "one")}
+
+	_, err := NewService(runner, threeRepositories()).MirrorWithOptions(
+		context.Background(), "acme", root, false, MirrorOptions{
+			OnResult: func(Result) error { return errors.New("disk full") },
+		})
+	if err == nil {
+		t.Fatal("a failed checkpoint must abort the run")
+	}
+}
+
+func TestMirrorStopsWhenThePacerReportsCancellation(t *testing.T) {
+	root := t.TempDir()
+	runner := &scriptedRunner{responses: clonesFor(root, "one", "two", "three")}
+	waiter := &countingWaiter{err: context.Canceled}
+
+	_, err := NewService(runner, threeRepositories()).MirrorWithOptions(
+		context.Background(), "acme", root, false, MirrorOptions{Pacer: waiter})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
 }

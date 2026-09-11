@@ -1,5 +1,7 @@
 package mirror
 
+import "time"
+
 type ProgressKind string
 
 const (
@@ -8,6 +10,7 @@ const (
 	ProgressRepositoryStarted   ProgressKind = "repository_started"
 	ProgressRepositoryCompleted ProgressKind = "repository_completed"
 	ProgressMetadataWritten     ProgressKind = "metadata_written"
+	ProgressWaiting             ProgressKind = "waiting"
 )
 
 type ProgressEvent struct {
@@ -18,6 +21,10 @@ type ProgressEvent struct {
 	Completed    int
 	Total        int
 	Path         string
+	// Message explains a ProgressWaiting event in one line.
+	Message string
+	// Until is when a ProgressWaiting event expects to resume. Zero when unknown.
+	Until time.Time
 }
 
 type ProgressFunc func(ProgressEvent)

@@ -25,3 +25,9 @@ func TestMetadataMarshalsConflictResult(t *testing.T) {
 		t.Fatal("metadata must not marshal to an empty JSON document")
 	}
 }
+
+func TestSkippedOutcomeHasItsWireValue(t *testing.T) {
+	if OutcomeSkipped != "skipped" {
+		t.Fatalf("OutcomeSkipped = %q, want skipped", OutcomeSkipped)
+	}
+}

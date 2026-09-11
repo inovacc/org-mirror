@@ -151,36 +151,103 @@ func (s *Service) Discover(ctx context.Context, organization string) ([]Reposito
 	return s.source.ListRepositories(ctx, organization)
 }
 
+// Waiter paces work. *ratelimit.Pacer satisfies it; the interface keeps this
+// package free of that dependency.
+type Waiter interface {
+	Wait(ctx context.Context) error
+}
+
+// MirrorOptions configures one mirror run.
+type MirrorOptions struct {
+	// Report receives progress events. Nil disables reporting.
+	Report ProgressFunc
+	// Pacer, when set, is waited on before each repository that runs git.
+	Pacer Waiter
+	// Skip maps a repository's full name to the reason it is being skipped.
+	Skip map[string]string
+	// Limit caps how many repositories this run processes, not counting skips.
+	// Zero means no cap.
+	Limit int
+	// OnResult is called with every result as it is produced, before the next
+	// repository starts. An error aborts the run, because a checkpoint that
+	// cannot be written makes resume unsafe.
+	OnResult func(Result) error
+}
+
 func (s *Service) Mirror(ctx context.Context, organization, root string, dryRun bool) (Metadata, error) {
-	return s.MirrorWithProgress(ctx, organization, root, dryRun, nil)
+	return s.MirrorWithOptions(ctx, organization, root, dryRun, MirrorOptions{})
 }
 
 func (s *Service) MirrorWithProgress(ctx context.Context, organization, root string, dryRun bool, report ProgressFunc) (Metadata, error) {
+	return s.MirrorWithOptions(ctx, organization, root, dryRun, MirrorOptions{Report: report})
+}
+
+func (s *Service) MirrorWithOptions(ctx context.Context, organization, root string, dryRun bool, options MirrorOptions) (Metadata, error) {
+	report := options.Report
 	reportProgress(report, ProgressEvent{Kind: ProgressDiscoveryStarted, Organization: organization})
 	repositories, err := s.Discover(ctx, organization)
 	if err != nil {
 		return Metadata{}, err
 	}
-	reportProgress(report, ProgressEvent{Kind: ProgressDiscoveryCompleted, Organization: organization, Total: len(repositories)})
+	total := len(repositories)
+	reportProgress(report, ProgressEvent{Kind: ProgressDiscoveryCompleted, Organization: organization, Total: total})
 
 	metadata := Metadata{
 		Organization: organization,
 		GeneratedAt:  time.Now().UTC(),
-		Repositories: make([]Result, 0, len(repositories)),
+		Repositories: make([]Result, 0, total),
 	}
 	organizationRoot := filepath.Join(root, organization)
+	processed := 0
+
 	for index, repository := range repositories {
-		reportProgress(report, ProgressEvent{Kind: ProgressRepositoryStarted, Organization: organization, Repository: repository, Completed: index, Total: len(repositories)})
+		if reason, skip := options.Skip[repository.NameWithOwner]; skip {
+			result := Result{
+				Repository: repository,
+				Path:       filepath.Join(organizationRoot, repository.Name),
+				Outcome:    OutcomeSkipped,
+				Message:    reason,
+			}
+			metadata.Repositories = append(metadata.Repositories, result)
+			if err := notifyResult(options.OnResult, result); err != nil {
+				return metadata, err
+			}
+			reportProgress(report, ProgressEvent{Kind: ProgressRepositoryCompleted, Organization: organization, Repository: repository, Result: result, Completed: index + 1, Total: total})
+			continue
+		}
+		if options.Limit > 0 && processed >= options.Limit {
+			metadata.Truncated = true
+			break
+		}
+		if options.Pacer != nil {
+			if err := options.Pacer.Wait(ctx); err != nil {
+				return metadata, err
+			}
+		}
+
+		reportProgress(report, ProgressEvent{Kind: ProgressRepositoryStarted, Organization: organization, Repository: repository, Completed: index, Total: total})
 		result := s.Sync(ctx, repository, organizationRoot, dryRun)
+		processed++
 		metadata.Repositories = append(metadata.Repositories, result)
-		reportProgress(report, ProgressEvent{Kind: ProgressRepositoryCompleted, Organization: organization, Repository: repository, Result: result, Completed: index + 1, Total: len(repositories)})
+		if err := notifyResult(options.OnResult, result); err != nil {
+			return metadata, err
+		}
+		reportProgress(report, ProgressEvent{Kind: ProgressRepositoryCompleted, Organization: organization, Repository: repository, Result: result, Completed: index + 1, Total: total})
 	}
+
 	if dryRun {
 		return metadata, nil
 	}
 	if err := WriteMetadata(filepath.Join(organizationRoot, "metadata.json"), metadata); err != nil {
 		return metadata, err
 	}
-	reportProgress(report, ProgressEvent{Kind: ProgressMetadataWritten, Organization: organization, Completed: len(repositories), Total: len(repositories), Path: filepath.Join(organizationRoot, "metadata.json")})
+	reportProgress(report, ProgressEvent{Kind: ProgressMetadataWritten, Organization: organization, Completed: len(metadata.Repositories), Total: total, Path: filepath.Join(organizationRoot, "metadata.json")})
 	return metadata, nil
+}
+
+func notifyResult(hook func(Result) error, result Result) error {
+	if hook == nil {
+		return nil
+	}
+	return hook(result)
 }
