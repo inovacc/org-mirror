@@ -13,6 +13,7 @@ import (
 type Service struct {
 	runner Runner
 	source RepositorySource
+	retry  RetryPolicy
 }
 
 func (s *Service) Sync(ctx context.Context, repository Repository, root string, dryRun bool) Result {
@@ -25,7 +26,7 @@ func (s *Service) Sync(ctx context.Context, repository Repository, root string, 
 			result.Message = "dry-run: would clone repository"
 			return result
 		}
-		if _, err := s.runner.Run(ctx, "", "git", "clone", repository.CloneURL, path); err != nil {
+		if _, err := s.runGit(ctx, "", "clone", repository.CloneURL, path); err != nil {
 			result.Outcome = OutcomeError
 			result.Message = fmt.Sprintf("clone repository: %v", err)
 			return result
@@ -56,7 +57,7 @@ func (s *Service) Sync(ctx context.Context, repository Repository, root string, 
 		result.Message = "dry-run: would fetch and fast-forward"
 		return result
 	}
-	if _, err := s.runner.Run(ctx, path, "git", "fetch", "origin"); err != nil {
+	if _, err := s.runGit(ctx, path, "fetch", "origin"); err != nil {
 		result.Outcome = OutcomeError
 		result.Message = fmt.Sprintf("fetch origin: %v", err)
 		return result
@@ -114,6 +115,33 @@ func NewService(runner Runner, sources ...RepositorySource) *Service {
 		service.source = sources[0]
 	}
 	return service
+}
+
+// NewServiceWithOptions builds a service that retries transient git failures.
+// A nil source means discovery is unavailable, which suits Sync-only callers.
+func NewServiceWithOptions(runner Runner, source RepositorySource, retry RetryPolicy) *Service {
+	return &Service{runner: runner, source: source, retry: retry}
+}
+
+// runGit runs a network-touching git command, retrying transient failures.
+// Local commands call the runner directly, because a local failure is real.
+func (s *Service) runGit(ctx context.Context, dir string, args ...string) (string, error) {
+	attempts := s.retry.attempts()
+	var output string
+	var err error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		output, err = s.runner.Run(ctx, dir, "git", args...)
+		if err == nil {
+			return output, nil
+		}
+		if attempt == attempts || !IsTransientGitFailure(output, err) {
+			return output, err
+		}
+		if waitErr := s.retry.wait(ctx, attempt); waitErr != nil {
+			return output, waitErr
+		}
+	}
+	return output, err
 }
 
 func (s *Service) Discover(ctx context.Context, organization string) ([]Repository, error) {

@@ -133,8 +133,12 @@ func TestMirrorReportsDiscoveryAndRepositoryProgress(t *testing.T) {
 }
 
 type scriptedRunner struct {
-	calls     []call
 	responses map[string]scriptedResponse
+	calls     []call
+	counts    map[string]int
+	// succeedAfter maps a command key to the attempt number on which it starts
+	// succeeding, so a transient failure can be scripted.
+	succeedAfter map[string]int
 }
 
 type scriptedResponse struct {
@@ -142,11 +146,23 @@ type scriptedResponse struct {
 	err    error
 }
 
+func (r *scriptedRunner) countFor(key string) int {
+	return r.counts[key]
+}
+
 func (r *scriptedRunner) Run(_ context.Context, dir, name string, args ...string) (string, error) {
 	r.calls = append(r.calls, call{dir: dir, name: name, args: args})
-	response, ok := r.responses[commandKey(dir, name, args)]
+	key := commandKey(dir, name, args)
+	if r.counts == nil {
+		r.counts = map[string]int{}
+	}
+	r.counts[key]++
+	if after, ok := r.succeedAfter[key]; ok && r.counts[key] >= after {
+		return "", nil
+	}
+	response, ok := r.responses[key]
 	if !ok {
-		return "", fmt.Errorf("unexpected command: %s", commandKey(dir, name, args))
+		return "", fmt.Errorf("unexpected command: %s", key)
 	}
 	return response.output, response.err
 }
