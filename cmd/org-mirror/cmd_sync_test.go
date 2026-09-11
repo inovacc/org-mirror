@@ -9,8 +9,8 @@ func TestNewSyncCommandConfiguresRequiredFlags(t *testing.T) {
 	if command.Use != "sync <organization>" {
 		t.Fatalf("unexpected command use: %q", command.Use)
 	}
-	if command.Flags().Lookup("root") == nil || command.Flags().Lookup("dry-run") == nil {
-		t.Fatal("sync command must expose root and dry-run flags")
+	if command.Flags().Lookup("root") == nil || command.Flags().Lookup("dry-run") == nil || command.Flags().Lookup("no-tui") == nil {
+		t.Fatal("sync command must expose root, dry-run, and no-tui flags")
 	}
 	root, err := command.Flags().GetString("root")
 	if err != nil {

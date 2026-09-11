@@ -19,14 +19,13 @@ func TestMirrorWritesAResultForEveryDiscoveredRepository(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "floci-io", "api")
 	runner := &scriptedRunner{responses: map[string]scriptedResponse{
-		commandKey("", "gh", []string{"auth", "status"}): {},
-		commandKey("", "gh", []string{"repo", "list", "floci-io", "--limit", "1000", "--json", "nameWithOwner,name,defaultBranchRef,isPrivate,isArchived,isFork"}): {
-			output: `[{"name":"api","nameWithOwner":"floci-io/api","defaultBranchRef":{"name":"main"}}]`,
-		},
-		commandKey("", "gh", []string{"repo", "clone", "floci-io/api", path}): {},
+		commandKey("", "git", []string{"clone", "https://github.com/floci-io/api.git", path}): {},
 	}}
+	source := &scriptedRepositorySource{repositories: []Repository{{
+		Name: "api", NameWithOwner: "floci-io/api", CloneURL: "https://github.com/floci-io/api.git", DefaultBranch: "main",
+	}}}
 
-	metadata, err := NewService(runner).Mirror(context.Background(), "floci-io", root, false)
+	metadata, err := NewService(runner, source).Mirror(context.Background(), "floci-io", root, false)
 	if err != nil {
 		t.Fatalf("mirror organization: %v", err)
 	}
@@ -40,12 +39,12 @@ func TestMirrorWritesAResultForEveryDiscoveredRepository(t *testing.T) {
 
 func TestSyncClonesMissingRepository(t *testing.T) {
 	root := t.TempDir()
-	repository := Repository{Name: "api", NameWithOwner: "floci-io/api"}
+	repository := Repository{Name: "api", NameWithOwner: "floci-io/api", CloneURL: "https://github.com/floci-io/api.git"}
 	path := filepath.Join(root, "api")
 	runner := &scriptedRunner{responses: map[string]scriptedResponse{
-		commandKey("", "gh", []string{"repo", "clone", "floci-io/api", path}): {},
-		commandKey(path, "git", []string{"rev-parse", "HEAD"}):                {output: "local-sha\n"},
-		commandKey(path, "git", []string{"rev-parse", "@{u}"}):                {output: "remote-sha\n"},
+		commandKey("", "git", []string{"clone", "https://github.com/floci-io/api.git", path}): {},
+		commandKey(path, "git", []string{"rev-parse", "HEAD"}):                                {output: "local-sha\n"},
+		commandKey(path, "git", []string{"rev-parse", "@{u}"}):                                {output: "remote-sha\n"},
 	}}
 
 	result := NewService(runner).Sync(context.Background(), repository, root, false)
@@ -96,6 +95,43 @@ func TestSyncPreservesDirtyWorkingCopyAsConflict(t *testing.T) {
 	}
 }
 
+func TestMirrorReportsDiscoveryAndRepositoryProgress(t *testing.T) {
+	root := t.TempDir()
+	runner := &scriptedRunner{}
+	source := &scriptedRepositorySource{repositories: []Repository{
+		{Name: "api", NameWithOwner: "floci-io/api"},
+		{Name: "web", NameWithOwner: "floci-io/web"},
+	}}
+
+	var events []ProgressEvent
+	_, err := NewService(runner, source).MirrorWithProgress(context.Background(), "floci-io", root, true, func(event ProgressEvent) {
+		events = append(events, event)
+	})
+	if err != nil {
+		t.Fatalf("mirror organization: %v", err)
+	}
+
+	wantKinds := []ProgressKind{
+		ProgressDiscoveryStarted,
+		ProgressDiscoveryCompleted,
+		ProgressRepositoryStarted,
+		ProgressRepositoryCompleted,
+		ProgressRepositoryStarted,
+		ProgressRepositoryCompleted,
+	}
+	if len(events) != len(wantKinds) {
+		t.Fatalf("progress events = %d, want %d: %#v", len(events), len(wantKinds), events)
+	}
+	for index, want := range wantKinds {
+		if events[index].Kind != want {
+			t.Fatalf("event %d kind = %q, want %q", index, events[index].Kind, want)
+		}
+	}
+	if events[1].Total != 2 || events[3].Completed != 1 || events[5].Completed != 2 {
+		t.Fatalf("unexpected progress counts: %#v", events)
+	}
+}
+
 type scriptedRunner struct {
 	calls     []call
 	responses map[string]scriptedResponse
@@ -119,22 +155,30 @@ func commandKey(dir, name string, args []string) string {
 	return strings.Join(append([]string{dir, name}, args...), " ")
 }
 
-func TestDiscoverChecksAuthenticationAndParsesRepositories(t *testing.T) {
-	runner := &scriptedRunner{responses: map[string]scriptedResponse{
-		commandKey("", "gh", []string{"auth", "status"}): {},
-		commandKey("", "gh", []string{"repo", "list", "floci-io", "--limit", "1000", "--json", "nameWithOwner,name,defaultBranchRef,isPrivate,isArchived,isFork"}): {
-			output: `[{"name":"api","nameWithOwner":"floci-io/api","defaultBranchRef":{"name":"main"},"isPrivate":true,"isArchived":false,"isFork":false}]`,
-		},
-	}}
+func TestDiscoverUsesRepositorySourceWithoutExecutingGH(t *testing.T) {
+	source := &scriptedRepositorySource{repositories: []Repository{{
+		Name: "api", NameWithOwner: "floci-io/api", DefaultBranch: "main", Private: true,
+	}}}
 
-	repositories, err := NewService(runner).Discover(context.Background(), "floci-io")
+	repositories, err := NewService(&scriptedRunner{}, source).Discover(context.Background(), "floci-io")
 	if err != nil {
 		t.Fatalf("discover repositories: %v", err)
 	}
 	if len(repositories) != 1 || repositories[0].DefaultBranch != "main" || !repositories[0].Private {
 		t.Fatalf("unexpected repositories: %#v", repositories)
 	}
-	if len(runner.calls) != 2 {
-		t.Fatalf("expected authentication plus listing commands, got %#v", runner.calls)
+	if source.organization != "floci-io" {
+		t.Fatalf("organization = %q, want floci-io", source.organization)
 	}
+}
+
+type scriptedRepositorySource struct {
+	organization string
+	repositories []Repository
+	err          error
+}
+
+func (s *scriptedRepositorySource) ListRepositories(_ context.Context, organization string) ([]Repository, error) {
+	s.organization = organization
+	return s.repositories, s.err
 }

@@ -5,6 +5,7 @@ import "time"
 type Repository struct {
 	Name          string `json:"name"`
 	NameWithOwner string `json:"nameWithOwner"`
+	CloneURL      string `json:"cloneURL"`
 	DefaultBranch string `json:"defaultBranch,omitempty"`
 	Private       bool   `json:"private"`
 	Archived      bool   `json:"archived"`

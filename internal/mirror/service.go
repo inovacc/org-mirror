@@ -2,7 +2,6 @@ package mirror
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -13,6 +12,7 @@ import (
 
 type Service struct {
 	runner Runner
+	source RepositorySource
 }
 
 func (s *Service) Sync(ctx context.Context, repository Repository, root string, dryRun bool) Result {
@@ -25,7 +25,7 @@ func (s *Service) Sync(ctx context.Context, repository Repository, root string, 
 			result.Message = "dry-run: would clone repository"
 			return result
 		}
-		if _, err := s.runner.Run(ctx, "", "gh", "repo", "clone", repository.NameWithOwner, path); err != nil {
+		if _, err := s.runner.Run(ctx, "", "git", "clone", repository.CloneURL, path); err != nil {
 			result.Outcome = OutcomeError
 			result.Message = fmt.Sprintf("clone repository: %v", err)
 			return result
@@ -104,53 +104,36 @@ func conflictMessage(status string) string {
 	return ""
 }
 
-func NewService(runner Runner) *Service {
-	return &Service{runner: runner}
+type RepositorySource interface {
+	ListRepositories(ctx context.Context, organization string) ([]Repository, error)
+}
+
+func NewService(runner Runner, sources ...RepositorySource) *Service {
+	service := &Service{runner: runner}
+	if len(sources) > 0 {
+		service.source = sources[0]
+	}
+	return service
 }
 
 func (s *Service) Discover(ctx context.Context, organization string) ([]Repository, error) {
-	if _, err := s.runner.Run(ctx, "", "gh", "auth", "status"); err != nil {
-		return nil, fmt.Errorf("verify GitHub CLI authentication: %w", err)
+	if s.source == nil {
+		return nil, errors.New("repository source is not configured")
 	}
-
-	output, err := s.runner.Run(ctx, "", "gh", "repo", "list", organization, "--limit", "1000", "--json", "nameWithOwner,name,defaultBranchRef,isPrivate,isArchived,isFork")
-	if err != nil {
-		return nil, fmt.Errorf("list repositories for %s: %w", organization, err)
-	}
-
-	var rows []struct {
-		Name          string `json:"name"`
-		NameWithOwner string `json:"nameWithOwner"`
-		DefaultBranch *struct {
-			Name string `json:"name"`
-		} `json:"defaultBranchRef"`
-		Private  bool `json:"isPrivate"`
-		Archived bool `json:"isArchived"`
-		Fork     bool `json:"isFork"`
-	}
-	if err := json.Unmarshal([]byte(output), &rows); err != nil {
-		return nil, fmt.Errorf("parse GitHub repository list: %w", err)
-	}
-
-	repositories := make([]Repository, 0, len(rows))
-	for _, row := range rows {
-		branch := ""
-		if row.DefaultBranch != nil {
-			branch = row.DefaultBranch.Name
-		}
-		repositories = append(repositories, Repository{
-			Name: row.Name, NameWithOwner: row.NameWithOwner, DefaultBranch: branch,
-			Private: row.Private, Archived: row.Archived, Fork: row.Fork,
-		})
-	}
-	return repositories, nil
+	return s.source.ListRepositories(ctx, organization)
 }
 
 func (s *Service) Mirror(ctx context.Context, organization, root string, dryRun bool) (Metadata, error) {
+	return s.MirrorWithProgress(ctx, organization, root, dryRun, nil)
+}
+
+func (s *Service) MirrorWithProgress(ctx context.Context, organization, root string, dryRun bool, report ProgressFunc) (Metadata, error) {
+	reportProgress(report, ProgressEvent{Kind: ProgressDiscoveryStarted, Organization: organization})
 	repositories, err := s.Discover(ctx, organization)
 	if err != nil {
 		return Metadata{}, err
 	}
+	reportProgress(report, ProgressEvent{Kind: ProgressDiscoveryCompleted, Organization: organization, Total: len(repositories)})
 
 	metadata := Metadata{
 		Organization: organization,
@@ -158,8 +141,11 @@ func (s *Service) Mirror(ctx context.Context, organization, root string, dryRun 
 		Repositories: make([]Result, 0, len(repositories)),
 	}
 	organizationRoot := filepath.Join(root, organization)
-	for _, repository := range repositories {
-		metadata.Repositories = append(metadata.Repositories, s.Sync(ctx, repository, organizationRoot, dryRun))
+	for index, repository := range repositories {
+		reportProgress(report, ProgressEvent{Kind: ProgressRepositoryStarted, Organization: organization, Repository: repository, Completed: index, Total: len(repositories)})
+		result := s.Sync(ctx, repository, organizationRoot, dryRun)
+		metadata.Repositories = append(metadata.Repositories, result)
+		reportProgress(report, ProgressEvent{Kind: ProgressRepositoryCompleted, Organization: organization, Repository: repository, Result: result, Completed: index + 1, Total: len(repositories)})
 	}
 	if dryRun {
 		return metadata, nil
@@ -167,5 +153,6 @@ func (s *Service) Mirror(ctx context.Context, organization, root string, dryRun 
 	if err := WriteMetadata(filepath.Join(organizationRoot, "metadata.json"), metadata); err != nil {
 		return metadata, err
 	}
+	reportProgress(report, ProgressEvent{Kind: ProgressMetadataWritten, Organization: organization, Completed: len(repositories), Total: len(repositories), Path: filepath.Join(organizationRoot, "metadata.json")})
 	return metadata, nil
 }

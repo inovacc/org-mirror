@@ -3,10 +3,14 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"path/filepath"
 
+	"github.com/inovacc/org-mirror/internal/githubapi"
 	"github.com/inovacc/org-mirror/internal/mirror"
+	"github.com/inovacc/org-mirror/internal/tui"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 const defaultMirrorRoot = `C:\Users\dyamm\Downloads\mirror\orgs`
@@ -18,6 +22,7 @@ func init() {
 func newSyncCommand() *cobra.Command {
 	var root string
 	var dryRun bool
+	var noTUI bool
 
 	command := &cobra.Command{
 		Use:   "sync <organization>",
@@ -25,7 +30,19 @@ func newSyncCommand() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			organization := args[0]
-			metadata, err := mirror.NewService(mirror.OSRunner{}).Mirror(context.Background(), organization, root, dryRun)
+			source, token, _, err := githubapi.NewAuthenticatedSource("github.com")
+			if err != nil {
+				return err
+			}
+			service := mirror.NewService(mirror.OSRunner{GitHubToken: token}, source)
+			var metadata mirror.Metadata
+			if shouldUseTUI(noTUI, command.OutOrStdout(), term.IsTerminal) {
+				metadata, err = tui.Run(command.Context(), organization, dryRun, func(ctx context.Context, report mirror.ProgressFunc) (mirror.Metadata, error) {
+					return service.MirrorWithProgress(ctx, organization, root, dryRun, report)
+				})
+			} else {
+				metadata, err = service.Mirror(command.Context(), organization, root, dryRun)
+			}
 			if err != nil {
 				return err
 			}
@@ -46,5 +63,14 @@ func newSyncCommand() *cobra.Command {
 	}
 	command.Flags().StringVar(&root, "root", defaultMirrorRoot, "directory that contains organization mirrors")
 	command.Flags().BoolVar(&dryRun, "dry-run", false, "report actions without changing repositories or metadata")
+	command.Flags().BoolVar(&noTUI, "no-tui", false, "disable the interactive progress interface")
 	return command
+}
+
+func shouldUseTUI(disabled bool, output io.Writer, isTerminal func(int) bool) bool {
+	if disabled {
+		return false
+	}
+	file, ok := output.(interface{ Fd() uintptr })
+	return ok && isTerminal(int(file.Fd()))
 }
