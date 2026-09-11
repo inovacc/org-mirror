@@ -184,9 +184,51 @@ func TestResumableRunIgnoresFinishedAndDryRuns(t *testing.T) {
 	if _, err := database.StartRun("other", time.Unix(4, 0), false); err != nil {
 		t.Fatal(err)
 	}
+	failed, err := database.StartRun("acme", time.Unix(5, 0), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := failed.Finish(StatusFailed, time.Unix(6, 0), errors.New("discovery failed")); err != nil {
+		t.Fatal(err)
+	}
 
 	if _, found, err := database.ResumableRun("acme"); err != nil || found {
 		t.Fatalf("found=%v err=%v, want no resumable run", found, err)
+	}
+}
+
+func TestResumableRunFindsARunFinishedAsInterrupted(t *testing.T) {
+	database, err := Open(t.TempDir() + "/database.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	run, err := database.StartRun("acme", time.Unix(1, 0), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.RecordRepository(resultFor("acme/one", mirror.OutcomeCloned), time.Unix(2, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Finish(StatusInterrupted, time.Unix(3, 0), nil); err != nil {
+		t.Fatal(err)
+	}
+
+	resumed, found, err := database.ResumableRun("acme")
+	if err != nil {
+		t.Fatalf("find resumable run: %v", err)
+	}
+	if !found || resumed.ID() != run.ID() {
+		t.Fatalf("found=%v id=%d, want the interrupted run", found, resumed.ID())
+	}
+
+	completed, err := resumed.CompletedRepositories()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed["acme/one"] == "" {
+		t.Fatal("a skip reason must explain where the repository was completed")
 	}
 }
 

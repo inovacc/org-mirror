@@ -37,7 +37,8 @@ func (d *Database) Close() error { return d.db.Close() }
 type Status string
 
 const (
-	// StatusRunning marks a run in flight. A run left in this state is resumable.
+	// StatusRunning marks a run in flight. A run left in this state means the
+	// process died before finishing it, and it is resumable.
 	StatusRunning Status = "running"
 	// StatusCompleted marks a run that processed every repository.
 	StatusCompleted Status = "completed"
@@ -74,12 +75,15 @@ func (d *Database) StartRun(organization string, started time.Time, dryRun bool)
 }
 
 // ResumableRun returns the most recent real run for the organization that was
-// never finished, which is what an interrupted process leaves behind.
+// interrupted or never finished, which is what a killed process or an
+// operator-cancelled / --limit-capped run leaves behind. A run that finished
+// with StatusFailed is not resumable: it stopped on a real error rather than
+// an operator's choice, and rerunning it should start clean.
 func (d *Database) ResumableRun(organization string) (*Run, bool, error) {
 	var id int64
 	err := d.db.QueryRow(
-		`SELECT id FROM sync_runs WHERE organization = ? AND status = ? AND dry_run = 0 ORDER BY id DESC LIMIT 1`,
-		organization, string(StatusRunning),
+		`SELECT id FROM sync_runs WHERE organization = ? AND status IN (?, ?) AND dry_run = 0 ORDER BY id DESC LIMIT 1`,
+		organization, string(StatusRunning), string(StatusInterrupted),
 	).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
