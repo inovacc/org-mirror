@@ -108,7 +108,10 @@ every schema statement is `CREATE TABLE IF NOT EXISTS` and no column type change
 ### Resume decision
 
 Before discovery, `sync` looks for the most recent `sync_runs` row for the organization
-with status `running` and `dry_run = 0`. When one exists and `--no-resume` was not passed,
+with `dry_run = 0` whose status is either `running` or `interrupted`. Both are resumable
+and they record different histories: `running` means the process died, `interrupted`
+means the operator stopped it with Ctrl+C or a repository cap hit. A `failed` run is not
+resumable, because it stopped on a real error and a rerun should start clean. When one exists and `--no-resume` was not passed,
 the run attaches to it: the same run id receives the new repository rows, and every
 repository already recorded under that run with an outcome of `cloned`, `updated`,
 `unchanged` or `conflict` is skipped.
@@ -123,11 +126,15 @@ whole organization, not only the tail that this invocation processed.
 When no interrupted run exists, or `--no-resume` was passed, a fresh run starts and
 nothing is skipped.
 
+A dry run neither resumes nor is resumable. Its run row is recorded with `dry_run = 1`,
+which the resume query excludes, so a `--dry-run` invocation cannot leave behind a row
+that a later real sync would adopt as unfinished work.
+
 ### Cancellation
 
 `Ctrl+C` cancels the context. The command distinguishes `context.Canceled` from a real
-failure and calls `Finish` with `interrupted`. That leaves the run resumable, whereas
-`failed` would too, but the status tells the operator which happened. Recording the final
+failure and calls `Finish` with `interrupted`, which the resume query treats as
+continuable. `failed` is not continuable, so the distinction is not merely cosmetic. Recording the final
 status uses a short context detached from the cancelled one so the write completes.
 
 ## The `limit` verb

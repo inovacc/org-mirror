@@ -2154,7 +2154,8 @@ Replace the body of `internal/history/database.go` below the `Open`/`Close` func
 type Status string
 
 const (
-	// StatusRunning marks a run in flight. A run left in this state is resumable.
+	// StatusRunning marks a run in flight. A run left in this state means the
+	// process died before it could finish, so the run is resumable.
 	StatusRunning Status = "running"
 	// StatusCompleted marks a run that processed every repository.
 	StatusCompleted Status = "completed"
@@ -2191,12 +2192,14 @@ func (d *Database) StartRun(organization string, started time.Time, dryRun bool)
 }
 
 // ResumableRun returns the most recent real run for the organization that was
-// never finished, which is what an interrupted process leaves behind.
+// never finished, which is what a killed process leaves behind, or that the
+// operator stopped on purpose with Ctrl+C or a repository cap. A failed run is
+// deliberately excluded: it stopped on a real error, so a rerun starts clean.
 func (d *Database) ResumableRun(organization string) (*Run, bool, error) {
 	var id int64
 	err := d.db.QueryRow(
-		`SELECT id FROM sync_runs WHERE organization = ? AND status = ? AND dry_run = 0 ORDER BY id DESC LIMIT 1`,
-		organization, string(StatusRunning),
+		`SELECT id FROM sync_runs WHERE organization = ? AND status IN (?, ?) AND dry_run = 0 ORDER BY id DESC LIMIT 1`,
+		organization, string(StatusRunning), string(StatusInterrupted),
 	).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
@@ -2976,7 +2979,7 @@ The last task joins everything: new flags, the resume decision, per-repository c
 - Consumes: everything produced by Tasks 1 through 7.
 - Produces:
   - `func finalStatus(runErr error, truncated bool) history.Status`
-  - `func resumeSkips(database *history.Database, organization string, noResume bool) (*history.Run, map[string]string, error)`
+  - `func resumeSkips(database *history.Database, organization string, disabled, dryRun bool) (*history.Run, map[string]string, error)`
   - `type waitReporter struct { mu sync.Mutex; report mirror.ProgressFunc; organization string; fallback io.Writer }` with `attach(mirror.ProgressFunc)` and `notify(ratelimit.Wait)`
   - `Model` gains `waiting string` and `waitingUntil time.Time`, cleared by the next repository event.
 
@@ -3029,7 +3032,7 @@ func TestResumeSkipsReturnsTheInterruptedRunsCompletedRepositories(t *testing.T)
 		t.Fatal(err)
 	}
 
-	run, skips, err := resumeSkips(database, "acme", false)
+	run, skips, err := resumeSkips(database, "acme", false, false)
 	if err != nil {
 		t.Fatalf("resume skips: %v", err)
 	}
@@ -3061,7 +3064,7 @@ func TestResumeSkipsStartsFreshWhenResumeIsDisabled(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	run, skips, err := resumeSkips(database, "acme", true)
+	run, skips, err := resumeSkips(database, "acme", true, false)
 	if err != nil {
 		t.Fatalf("resume skips: %v", err)
 	}
@@ -3081,7 +3084,7 @@ func TestResumeSkipsStartsAFreshRunWhenNothingIsResumable(t *testing.T) {
 	}
 	defer database.Close()
 
-	run, skips, err := resumeSkips(database, "acme", false)
+	run, skips, err := resumeSkips(database, "acme", false, false)
 	if err != nil {
 		t.Fatalf("resume skips: %v", err)
 	}
@@ -3326,7 +3329,7 @@ next sync of the same organization.`,
 			}
 			defer database.Close()
 
-			run, skips, err := resumeSkips(database, organization, noResume || dryRun)
+			run, skips, err := resumeSkips(database, organization, noResume || dryRun, dryRun)
 			if err != nil {
 				return err
 			}
@@ -3464,7 +3467,7 @@ func gitBackoff(attempt int) time.Duration {
 
 // resumeSkips continues an interrupted run when there is one, and reports which
 // repositories that run already finished.
-func resumeSkips(database *history.Database, organization string, disabled bool) (*history.Run, map[string]string, error) {
+func resumeSkips(database *history.Database, organization string, disabled, dryRun bool) (*history.Run, map[string]string, error) {
 	if !disabled {
 		run, found, err := database.ResumableRun(organization)
 		if err != nil {
@@ -3478,7 +3481,7 @@ func resumeSkips(database *history.Database, organization string, disabled bool)
 			return run, skips, nil
 		}
 	}
-	run, err := database.StartRun(organization, time.Now(), false)
+	run, err := database.StartRun(organization, time.Now(), dryRun)
 	if err != nil {
 		return nil, nil, err
 	}
