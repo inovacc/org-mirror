@@ -25,7 +25,7 @@
 - Tests use `t.TempDir()` for files and must not sleep for a measurable duration. The
   single exception is the one test that exercises `SystemClock.Sleep` itself, where the
   real wait IS the behaviour under test; it uses one millisecond.
-- Run `go build ./... && go vet ./... && go test ./...` before every commit.
+- Run `gofmt -l ./cmd/... ./internal/...` (it must print nothing) and `go build ./... && go vet ./... && go test ./...` before every commit. Build, vet and test do not catch formatting.
 - Commit messages are conventional (`feat:`, `fix:`, `test:`, `docs:`) and end with the line `Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>`.
 
 ---
@@ -2412,17 +2412,20 @@ func TestRateLimitsParsesEveryResource(t *testing.T) {
 }
 
 func TestRateLimitsOrdersCoreFirstThenTheRestAlphabetically(t *testing.T) {
+	// code_search sorts alphabetically BEFORE core, so a naive alphabetical sort
+	// would put it first. Its presence is what makes this test able to fail.
 	limits := RateLimits{Resources: map[string]RateLimit{
-		"search":  {Limit: 30},
-		"core":    {Limit: 5000},
-		"graphql": {Limit: 5000},
+		"search":      {Limit: 30},
+		"core":        {Limit: 5000},
+		"graphql":     {Limit: 5000},
+		"code_search": {Limit: 10},
 	}}
 
 	var names []string
 	for _, resource := range limits.Ordered() {
 		names = append(names, resource.Name)
 	}
-	want := []string{"core", "graphql", "search"}
+	want := []string{"core", "code_search", "graphql", "search"}
 	if len(names) != len(want) {
 		t.Fatalf("names = %v, want %v", names, want)
 	}
@@ -2485,9 +2488,33 @@ func TestRepositoryCountEscapesTheOrganization(t *testing.T) {
 func TestRateLimitsRespectsACancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
+	client := &jsonClient{}
 
-	if _, err := NewSource(&jsonClient{}).RateLimits(ctx); err == nil {
+	_, err := NewSource(client).RateLimits(ctx)
+
+	// Asserting only that err is non-nil would pass with the context check
+	// deleted, because the empty fake errors on every path. The never-called
+	// assertion is what proves the method short-circuited.
+	if err == nil {
 		t.Fatal("a cancelled context must stop the call")
+	}
+	if len(client.requested) != 0 {
+		t.Fatalf("requested %v, want the call to be refused before any request", client.requested)
+	}
+}
+
+func TestRepositoryCountRespectsACancelledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	client := &jsonClient{}
+
+	_, err := NewSource(client).RepositoryCount(ctx, "acme")
+
+	if err == nil {
+		t.Fatal("a cancelled context must stop the call")
+	}
+	if len(client.requested) != 0 {
+		t.Fatalf("requested %v, want the call to be refused before any request", client.requested)
 	}
 }
 ```
@@ -2577,7 +2604,7 @@ func (s *Source) RepositoryCount(ctx context.Context, organization string) (int,
 		return 0, err
 	}
 	var payload struct {
-		PublicRepos int `json:"public_repos"`
+		PublicRepos  int `json:"public_repos"`
 		TotalPrivate int `json:"total_private_repos"`
 	}
 	path := fmt.Sprintf("orgs/%s", url.PathEscape(organization))
