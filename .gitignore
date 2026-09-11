@@ -69,3 +69,5 @@ cmd/version.go
 # Coverage
 coverage.out
 coverage.html
+
+.scripts/
