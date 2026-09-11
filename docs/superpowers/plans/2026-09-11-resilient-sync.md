@@ -18,7 +18,13 @@
 - Every sleep goes through the injected `Clock`, never `time.Sleep`, so tests are instant.
 - Timestamps stored in SQLite are UTC RFC 3339 nanosecond strings, matching the existing rows.
 - Existing exported functions keep working: `history.Database.Record`, `mirror.Service.Mirror`, and `mirror.Service.MirrorWithProgress` stay callable with their current signatures.
-- Tests are table-driven where there is more than one case, use `t.TempDir()` for files, and never sleep.
+- Tests are table-driven when several cases exercise the SAME behaviour with different
+  inputs. Cases that exercise DIFFERENT branches with different assertions stay as
+  separate named tests; a table whose rows each need their own flag is a switch
+  statement wearing a table's clothes.
+- Tests use `t.TempDir()` for files and must not sleep for a measurable duration. The
+  single exception is the one test that exercises `SystemClock.Sleep` itself, where the
+  real wait IS the behaviour under test; it uses one millisecond.
 - Run `go build ./... && go vet ./... && go test ./...` before every commit.
 - Commit messages are conventional (`feat:`, `fix:`, `test:`, `docs:`) and end with the line `Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>`.
 
