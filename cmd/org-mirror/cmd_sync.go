@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -15,18 +16,18 @@ import (
 	"golang.org/x/term"
 )
 
-const defaultMirrorRoot = `C:\Users\dyamm\Downloads\mirror\orgs`
-const defaultHistoryDatabase = `C:\Users\dyamm\Downloads\mirror\database.db`
-
 func init() {
 	rootCmd.AddCommand(newSyncCommand())
 }
 
 func newSyncCommand() *cobra.Command {
-	var root string
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = "."
+	}
+	root, databasePath := defaultSyncPaths(home)
 	var dryRun bool
 	var noTUI bool
-	var databasePath string
 
 	command := &cobra.Command{
 		Use:   "sync <organization>",
@@ -35,16 +36,16 @@ func newSyncCommand() *cobra.Command {
 		RunE: func(command *cobra.Command, args []string) error {
 			organization := args[0]
 			started := time.Now()
+			database, err := prepareSyncStorage(root, databasePath)
+			if err != nil {
+				return err
+			}
+			defer database.Close()
 			source, token, _, err := githubapi.NewAuthenticatedSource("github.com")
 			if err != nil {
 				return err
 			}
 			service := mirror.NewService(mirror.OSRunner{GitHubToken: token}, source)
-			database, err := history.Open(databasePath)
-			if err != nil {
-				return err
-			}
-			defer database.Close()
 			var metadata mirror.Metadata
 			if shouldUseTUI(noTUI, command.OutOrStdout(), term.IsTerminal) {
 				metadata, err = tui.Run(command.Context(), organization, dryRun, func(ctx context.Context, report mirror.ProgressFunc) (mirror.Metadata, error) {
@@ -75,11 +76,23 @@ func newSyncCommand() *cobra.Command {
 			return nil
 		},
 	}
-	command.Flags().StringVar(&root, "root", defaultMirrorRoot, "directory that contains organization mirrors")
+	command.Flags().StringVar(&root, "root", root, "directory that contains organization mirrors")
 	command.Flags().BoolVar(&dryRun, "dry-run", false, "report actions without changing repositories or metadata")
 	command.Flags().BoolVar(&noTUI, "no-tui", false, "disable the interactive progress interface")
-	command.Flags().StringVar(&databasePath, "database", defaultHistoryDatabase, "SQLite database for sync history")
+	command.Flags().StringVar(&databasePath, "database", databasePath, "SQLite database for sync history")
 	return command
+}
+
+func defaultSyncPaths(home string) (string, string) {
+	base := filepath.Join(home, "Downloads", "mirror")
+	return filepath.Join(base, "orgs"), filepath.Join(base, "database.db")
+}
+
+func prepareSyncStorage(root, databasePath string) (*history.Database, error) {
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return nil, fmt.Errorf("create organizations directory: %w", err)
+	}
+	return history.Open(databasePath)
 }
 
 func shouldUseTUI(disabled bool, output io.Writer, isTerminal func(int) bool) bool {
