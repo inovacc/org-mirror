@@ -262,3 +262,84 @@ func resultFor(fullName string, outcome mirror.Outcome) mirror.Result {
 		Outcome:    outcome,
 	}
 }
+
+func TestRecordedRepositoriesReportsZeroForAFreshRun(t *testing.T) {
+	database, err := Open(t.TempDir() + "/database.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	run, err := database.StartRun("acme", time.Unix(1, 0), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	count, err := run.RecordedRepositories()
+	if err != nil {
+		t.Fatalf("recorded repositories: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("count = %d, want 0", count)
+	}
+}
+
+func TestRecordedRepositoriesCountsWhatWasCheckpointed(t *testing.T) {
+	database, err := Open(t.TempDir() + "/database.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	run, err := database.StartRun("acme", time.Unix(1, 0), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"acme/one", "acme/two", "acme/three"} {
+		if err := run.RecordRepository(resultFor(name, mirror.OutcomeCloned), time.Unix(2, 0)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	count, err := run.RecordedRepositories()
+	if err != nil {
+		t.Fatalf("recorded repositories: %v", err)
+	}
+	if count != 3 {
+		t.Fatalf("count = %d, want 3", count)
+	}
+}
+
+func TestRecordedRepositoriesIsNotPollutedByAnotherRun(t *testing.T) {
+	database, err := Open(t.TempDir() + "/database.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	other, err := database.StartRun("acme", time.Unix(1, 0), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"acme/one", "acme/two"} {
+		if err := other.RecordRepository(resultFor(name, mirror.OutcomeCloned), time.Unix(2, 0)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	run, err := database.StartRun("acme", time.Unix(3, 0), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.RecordRepository(resultFor("acme/three", mirror.OutcomeCloned), time.Unix(4, 0)); err != nil {
+		t.Fatal(err)
+	}
+
+	count, err := run.RecordedRepositories()
+	if err != nil {
+		t.Fatalf("recorded repositories: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("count = %d, want 1 (this run's own row only, not the other run's two)", count)
+	}
+}

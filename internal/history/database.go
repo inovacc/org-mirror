@@ -153,14 +153,25 @@ func (r *Run) RecordRepository(result mirror.Result, at time.Time) error {
 	return nil
 }
 
+// RecordedRepositories reports how many repositories this run has
+// checkpointed so far. It reads the database rather than any in-memory
+// tally, because an interrupted front end may never hand its results back.
+func (r *Run) RecordedRepositories() (int, error) {
+	var total int
+	if err := r.db.QueryRow(`SELECT COUNT(*) FROM repositories WHERE sync_run_id = ?`, r.id).Scan(&total); err != nil {
+		return 0, fmt.Errorf("count run repositories: %w", err)
+	}
+	return total, nil
+}
+
 // Finish closes the run. After this the run is no longer resumable unless the
 // status says otherwise.
 func (r *Run) Finish(status Status, finished time.Time, runErr error) error {
-	var total int
-	if err := r.db.QueryRow(`SELECT COUNT(*) FROM repositories WHERE sync_run_id = ?`, r.id).Scan(&total); err != nil {
-		return fmt.Errorf("count run repositories: %w", err)
+	total, err := r.RecordedRepositories()
+	if err != nil {
+		return err
 	}
-	_, err := r.db.Exec(
+	_, err = r.db.Exec(
 		`UPDATE sync_runs SET status = ?, completed_at = ?, repository_count = ?, error = ? WHERE id = ?`,
 		string(status), finished.UTC().Format(time.RFC3339Nano), total, errorText(runErr), r.id,
 	)

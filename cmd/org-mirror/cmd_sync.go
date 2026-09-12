@@ -111,6 +111,12 @@ next sync of the same organization.`,
 			}
 
 			status := finalStatus(err, metadata.Truncated)
+			// Finish writes the same count this reports into the run's own
+			// row, and it does not change once mirroring has stopped (no
+			// repository is checkpointed after this point), so reading it
+			// after Finish - rather than before - means the number in the
+			// summary is always the number Finish just persisted, not a
+			// second, separately-timed read of the same table.
 			finishErr := run.Finish(status, time.Now(), err)
 			if finishErr != nil {
 				// The run's own outcome is what the operator needs to see; a
@@ -126,7 +132,15 @@ next sync of the same organization.`,
 
 			if outcome != nil {
 				if status == history.StatusInterrupted {
-					fmt.Fprintf(command.OutOrStdout(), "interrupted: %d repositories recorded; run sync again to continue\n", len(metadata.Repositories))
+					// metadata.Repositories may already be empty here - the
+					// interactive front end can end before it hands its
+					// result back - so the count comes from the database,
+					// the one source that is never missing a checkpoint.
+					recorded, countErr := run.RecordedRepositories()
+					if countErr != nil {
+						fmt.Fprintf(command.ErrOrStderr(), "warning: could not read how many repositories were recorded: %v\n", countErr)
+					}
+					fmt.Fprint(command.OutOrStdout(), interruptedSummary(recorded, countErr))
 				}
 				return outcome
 			}
@@ -231,6 +245,20 @@ func printResults(w io.Writer, results []mirror.Result) {
 		}
 		fmt.Fprintf(w, "%s: %s (%s)\n", result.Repository.NameWithOwner, result.Outcome, result.Message)
 	}
+}
+
+// interruptedSummary formats the closing line printed after an interrupted
+// run. recorded is the database's own count of repositories checkpointed for
+// this run, not an in-memory tally, because the interactive front end can end
+// before it hands one back. When countErr is non-nil that count could not be
+// read at all, so the line says so instead of claiming a specific number -
+// reporting recorded as if it were known would repeat the exact mistake this
+// fix corrects, just with a different wrong number.
+func interruptedSummary(recorded int, countErr error) string {
+	if countErr != nil {
+		return "interrupted: run sync again to continue (repository count unavailable)\n"
+	}
+	return fmt.Sprintf("interrupted: %d repositories recorded; run sync again to continue\n", recorded)
 }
 
 // runOutcome decides what the command reports when the run itself and the

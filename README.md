@@ -66,17 +66,23 @@ caught the same way whether or not `--no-tui` is set, and even with output
 redirected, so an interrupt always gets the chance to record the run instead of
 the OS's default disposition just killing the process. A second `Ctrl+C` still
 kills immediately, for a `git` child that is wedged. Cancelling a run does not
-exit silently: it still prints a result line for every repository that finished
-before the interruption, followed by a line stating how many were recorded and
-that running the same sync again continues from there. Silence would look like
-nothing happened, when in fact everything up to that point was saved. The exit
-code stays non-zero, so scripts still see the interruption as unsuccessful. One
-caveat applies only to the interactive interface: because of how it shuts down,
-that summary can under-report the count as zero right when the interface is
-cancelled, even though every repository it actually finished was checkpointed
-correctly - `--no-tui` always reports the accurate count. The next sync of the
-same organization continues the interrupted run and skips what was already
-done. Repositories that failed are retried rather than skipped.
+exit silently: it still prints a result line for every repository the run
+already reported before the interruption, followed by a closing line stating
+how many repositories the history database actually has recorded for the run
+and that running the same sync again continues from there - that count always
+comes from the database itself, never from what the interrupted process
+happened to still be holding in memory, so it is accurate even when the
+interactive interface has nothing left to show. Silence, or a wrong count,
+would both look like nothing happened, when in fact everything up to that
+point was saved. The exit code stays non-zero, so scripts still see the
+interruption as unsuccessful. One cosmetic difference remains for the
+interactive interface: because of how it shuts down, the individual
+per-repository lines above that closing count can be missing right when the
+interface itself is what gets cancelled, even though the closing count is
+correct and every one of those repositories is genuinely in the database -
+`--no-tui` always shows both. The next sync of the same organization continues
+the interrupted run and skips what was already done. Repositories that failed
+are retried rather than skipped.
 
 Each real run writes `C:\Users\dyamm\Downloads\mirror\orgs\<organization>\metadata.json`
 by default. It includes the UTC run time and, for each discovered repository, its

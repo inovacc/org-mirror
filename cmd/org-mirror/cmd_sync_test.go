@@ -285,3 +285,24 @@ func TestShouldPrintResults(t *testing.T) {
 		})
 	}
 }
+
+func TestInterruptedSummary(t *testing.T) {
+	cases := []struct {
+		name     string
+		recorded int
+		countErr error
+		want     string
+	}{
+		{name: "zero recorded", recorded: 0, want: "interrupted: 0 repositories recorded; run sync again to continue\n"},
+		{name: "several recorded", recorded: 40, want: "interrupted: 40 repositories recorded; run sync again to continue\n"},
+		{name: "count unreadable, even with a recorded value present", recorded: 40, countErr: errors.New("database is locked"), want: "interrupted: run sync again to continue (repository count unavailable)\n"},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := interruptedSummary(testCase.recorded, testCase.countErr); got != testCase.want {
+				t.Fatalf("interruptedSummary(%d, %v) = %q, want %q", testCase.recorded, testCase.countErr, got, testCase.want)
+			}
+		})
+	}
+}
